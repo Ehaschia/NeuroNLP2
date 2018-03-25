@@ -74,12 +74,12 @@ def main():
     embedding = args.embedding
     embedding_path = args.embedding_dict
 
-    embedd_dict, embedd_dim = utils.load_embedding_dict(embedding, embedding_path)
-
+    # embedd_dict, embedd_dim = utils.load_embedding_dict(embedding, embedding_path)
+    embedd_dim = 100
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
     type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/", train_path,data_paths=[dev_path, test_path],
-                                                 max_vocabulary_size=50000, embedd_dict=embedd_dict)
+                                                 max_vocabulary_size=50000, embedd_dict=None)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -103,13 +103,14 @@ def main():
         table[conllx_data.UNK_ID, :] = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
         oov = 0
         for word, index in word_alphabet.items():
-            if word in embedd_dict:
-                embedding = embedd_dict[word]
-            elif word.lower() in embedd_dict:
-                embedding = embedd_dict[word.lower()]
-            else:
-                embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
-                oov += 1
+            # if word in embedd_dict:
+            #     embedding = embedd_dict[word]
+            # elif word.lower() in embedd_dict:
+            #     embedding = embedd_dict[word.lower()]
+            # else:
+            #     embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
+            #     oov += 1
+            embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
             table[index, :] = embedding
         print('oov: %d' % oov)
         return torch.from_numpy(table)
