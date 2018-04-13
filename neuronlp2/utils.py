@@ -25,7 +25,7 @@ def load_embedding_dict(embedding, embedding_path, normalize_digits=True):
         # loading GloVe
         embedd_dim = -1
         embedd_dict = dict()
-        with gzip.open(embedding_path, 'r') as file:
+        with open(embedding_path, 'r') as file:
             for line in file:
                 line = line.strip()
                 line = line.decode('utf-8')
