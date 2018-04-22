@@ -7,6 +7,9 @@ from neuronlp2.nn.utils import sequence_mask, reverse_padded_sequence
 from torch.autograd import Variable
 from torch.nn.parameter import Parameter
 from torch.nn import Embedding
+from neuronlp2.io import get_logger, conllx_data
+import time
+import sys
 
 
 class ChainCRF(nn.Module):
@@ -88,7 +91,6 @@ class ChainCRF(nn.Module):
         mask_transpose = None
         if mask is not None:
             mask_transpose = mask.unsqueeze(2).transpose(0, 1)
-
 
         # shape = [batch, num_label]
         partition = None
@@ -175,11 +177,12 @@ class ChainCRF(nn.Module):
 
         return back_pointer.transpose(0, 1) + leading_symbolic
 
+
 class lveg(nn.Module):
     def __init__(self, num_labels, gaussian_dim, word_size):
         super(lveg, self).__init__()
 
-        self.num_labels = num_labels+1
+        self.num_labels = num_labels + 1
         self.gaussian_dim = gaussian_dim
 
         self.trans_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels))
@@ -188,8 +191,8 @@ class lveg(nn.Module):
         self.trans_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
         self.trans_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
         self.s_weight_em = Embedding(word_size, self.num_labels)
-        self.s_mu_em = Embedding(word_size, self.num_labels*gaussian_dim)
-        self.s_var_em = Embedding(word_size, self.num_labels*gaussian_dim)
+        self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim)
+        self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim)
 
         self.reset_parameter()
 
@@ -287,7 +290,7 @@ class lveg(nn.Module):
                     mask_t = mask_transpose[t]
                     partition = partition + (partition_new - partition) * mask_t
                 if t == length - 1:
-                    partition = partition[:, :, -1]
+                    partition = partition[:, :, 2]
             if t != length - 1:
                 tgt_energy += curr_energy[
                     batch_index, prev_label, target_transpose[t], target_transpose[t + 1]]
@@ -309,14 +312,14 @@ class lveg(nn.Module):
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
 
-        forward = torch.zeros([length-1, batch_size, num_label, num_label])
-        backward = torch.zeros([length-1, batch_size, num_label, num_label])
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label])
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label])
         holder = torch.zeros([1, batch_size, num_label, num_label])
 
         for i in range(0, length - 1):
             if i == 0:
                 forward[i] = energy_transpose[i, :, -1, :, :]
-                backward[i] = reverse_energy_transpose[i, :, :, :, -1]
+                backward[i] = reverse_energy_transpose[i, :, :, :, 2]
             else:
                 forward[i] = logsumexp(forward[i - 1].unsqueeze(3) + energy_transpose[i], dim=1)
                 forward[i] = forward[i-1] + (forward[i] - forward[i-1])* mask_transpose[i].unsqueeze(1).unsqueeze(2)
@@ -326,7 +329,8 @@ class lveg(nn.Module):
                 backward[i] = backward[i-1] + (backward[i] - backward[i-1]) * mask_transpose[i].unsqueeze(1).unsqueeze(2)
 
         # detect score calculate by forward and backward, should be equal
-        forward_score = logsumexp(forward[-1, :, :, -1], dim=1)
+        # it is right to be here?
+        forward_score = logsumexp(forward[-1, :, :, 2], dim=1)
         backword_score = logsumexp(backward[-1, :, -1, :], dim=1)
         err = forward_score - backword_score
 
@@ -335,7 +339,7 @@ class lveg(nn.Module):
         backward = torch.cat((backward, holder), dim=0)
 
         cnt = forward + backward
-        cnt_transpose = cnt[:, :, leading_symbolic:-2, leading_symbolic:-2]
+        cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
         length, batch_size, num_label, _ = cnt_transpose.size()
 
@@ -352,7 +356,7 @@ class lveg(nn.Module):
 
         # pi[0] = energy[:, 0, -1, leading_symbolic:-1]
         # viterbi docoding?
-        pi[0] = cnt[0, :, -1, leading_symbolic:-2]
+        pi[0] = cnt[0, :, -1, leading_symbolic:-1]
         pointer[0] = -1
         for t in range(1, length - 1):
             pi_prev = pi[t - 1]
@@ -391,7 +395,7 @@ def generate_data(emission_rules, trans_rules, begin_rule, min_len, len_delta, b
             if j == 0:
                 a_label = sampler(begin_rule)
             else:
-                a_label = sampler(trans_rules[label[j-1]])
+                a_label = sampler(trans_rules[label[j - 1]])
             a_word = sampler(emission_rules[a_label])
             label.append(a_label)
             word.append(a_word)
@@ -403,7 +407,7 @@ def generate_data(emission_rules, trans_rules, begin_rule, min_len, len_delta, b
         words.append(word)
     # padd data
     if lveg:
-        max_len = max(mask)+1
+        max_len = max(mask) + 1
     else:
         max_len = max(mask)
     for i in range(batch):
@@ -458,7 +462,7 @@ def main():
         label_batch, words_batch, mask_batch = generate_data(emmsion_rule, trans_rule, begin_rule, min_len, len_delta,
                                                              batch_size, lveg=True)
         test_set.append((label_batch, words_batch, mask_batch))
-    model = lveg(num_labels+1, gaussian_dim, words+1)
+    model = lveg(num_labels + 1, gaussian_dim, words + 1)
     # lveg(num_labels + 2, gaussian_dim, words+1)\
     # ChainCRF(words + 1, num_labels+1)
 
@@ -481,5 +485,144 @@ def main():
             corr += (torch.eq(preds, gold_label.data).float() * mask.data).sum()
             total += mask.data.sum()
         print("      acc is {}".format(corr / total))
+
+
+def natural_data():
+    batch_size = 16
+    num_epochs = 10
+    gaussian_dim = 1
+    learning_rate = 1e-3
+    momentum = 0.9
+    gamma = 0.0
+    schedule = 5
+    decay_rate = 0.05
+
+    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
+
+    logger = get_logger("POSCRFTagger")
+    # load data
+
+    logger.info("Creating Alphabets")
+    word_alphabet, char_alphabet, pos_alphabet, \
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden/",
+                                                 train_path, data_paths=[dev_path, test_path],
+                                                 max_vocabulary_size=50000, embedd_dict=None)
+
+    logger.info("Word Alphabet Size: %d" % word_alphabet.size())
+    logger.info("Character Alphabet Size: %d" % char_alphabet.size())
+    logger.info("POS Alphabet Size: %d" % pos_alphabet.size())
+
+    logger.info("Reading Data")
+    use_gpu = torch.cuda.is_available()
+
+    data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
+                                                   type_alphabet,
+                                                   use_gpu=False, symbolic_end=True)
+
+    num_data = sum(data_train[1])
+
+    data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
+    data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
+
+    network = lveg(pos_alphabet.size(), gaussian_dim, word_alphabet.size())
+
+    lr = learning_rate
+    optim = torch.optim.SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma)
+
+    num_batches = num_data / batch_size + 1
+    dev_correct = 0.0
+    best_epoch = 0
+    test_correct = 0.0
+    test_total = 0
+
+    for epoch in range(1, num_epochs + 1):
+        print('Epoch %d, learning rate=%.4f, decay rate=%.4f (schedule=%d)): ' % (
+            epoch, lr, decay_rate, schedule))
+        train_err = 0.
+        train_total = 0.
+
+        start_time = time.time()
+        num_back = 0
+        network.train()
+        for batch in range(1, num_batches + 1):
+            word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
+                                                                                   unk_replace=1.0)
+
+            optim.zero_grad()
+            loss = network.loss(word, labels, mask=masks).mean()
+            loss.backward()
+            optim.step()
+
+            num_inst = word.size(0)
+            train_err += loss.data[0] * num_inst
+            train_total += num_inst
+
+            time_ave = (time.time() - start_time) / batch
+            time_left = (num_batches - batch) * time_ave
+
+            # update log
+            if batch % 100 == 0:
+                sys.stdout.write("\b" * num_back)
+                sys.stdout.write(" " * num_back)
+                sys.stdout.write("\b" * num_back)
+                log_info = 'train: %d/%d loss: %.4f, time left (estimated): %.2fs' % (
+                    batch, num_batches, train_err / train_total, time_left)
+                sys.stdout.write(log_info)
+                sys.stdout.flush()
+                num_back = len(log_info)
+
+        sys.stdout.write("\b" * num_back)
+        sys.stdout.write(" " * num_back)
+        sys.stdout.write("\b" * num_back)
+        print('train: %d loss: %.4f, time: %.2fs' % (num_batches, train_err / train_total, time.time() - start_time))
+
+        # evaluate performance on dev data
+        network.eval()
+        dev_corr = 0.0
+        dev_total = 0
+        for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
+            word, char, labels, _, _, masks, lengths = batch
+            preds, corr = network.decode(word, mask=masks,
+                                         leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+            # if epoch >= 30:
+            #     store_label(epoch, preds, labels.data)
+            #     exit(0)
+            corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
+            num_tokens = masks.data.sum()
+            dev_corr += corr
+            dev_total += num_tokens
+        print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
+
+        if dev_correct < dev_corr:
+            dev_correct = dev_corr
+            best_epoch = epoch
+
+            # evaluate on test data when better performance detected
+            test_corr = 0.0
+            test_total = 0
+            for batch in conllx_data.iterate_batch_variable(data_test, batch_size):
+                word, char, labels, _, _, masks, lengths = batch
+                preds = network.decode(word, mask=masks,
+                                       leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+                corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
+                num_tokens = masks.data.sum()
+                test_corr += corr
+                test_total += num_tokens
+            test_correct = test_corr
+        print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+            dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
+        print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+            test_correct, test_total, test_correct * 100 / test_total, best_epoch))
+
+        if epoch % schedule == 0:
+            lr = learning_rate / (1.0 + epoch * decay_rate)
+            optim = torch.optim.SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma, nesterov=True)
+
+
 if __name__ == '__main__':
-    main()
+    natural_data()
+    # main()

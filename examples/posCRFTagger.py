@@ -21,6 +21,7 @@ from neuronlp2.io import get_logger, conllx_data
 from neuronlp2.models import BiRecurrentConvCRF, BiVarRecurrentConvCRF, BiRecurrentConvLVeG
 from neuronlp2 import utils
 import os.path
+from tensorboardX import SummaryWriter
 
 def store_label(epoch, pred, gold):
     if not os.path.exists(str(epoch) + '_pre'):
@@ -78,6 +79,7 @@ def main():
     parser.add_argument('--language', type=str, default='wsj')
     parser.add_argument('--spherical', default=False, action='store_true')
     parser.add_argument('--gaussian-dim', type=int, default=1)
+    parser.add_argument('--log-dir', type=str, default='./tensorboard/')
 
     args = parser.parse_args()
 
@@ -182,7 +184,8 @@ def main():
                                         window, mode, hidden_size, num_layers, num_labels,
                                         tag_space=tag_space, embedd_word=word_table, bigram=bigram, p_in=p_in,
                                         p_out=p_out, p_rnn=p_rnn, initializer=initializer)
-    logger.info("Bulid network:" + type(network).__name__)
+    network_name = type(network).__name__
+    logger.info("Bulid network:" + network_name)
 
     if use_gpu:
         network.cuda()
@@ -194,6 +197,9 @@ def main():
     logger.info("training: l2: %f, (#training data: %d, batch: %d, unk replace: %.2f)" % (
     gamma, num_data, batch_size, unk_replace))
     logger.info("dropout(in, out, rnn): (%.2f, %.2f, %s)" % (p_in, p_out, p_rnn))
+
+    writer = SummaryWriter(log_dir=args.log_dir + "/" + network_name)
+    writer.add_text('config', str(args))
 
     num_batches = num_data / batch_size + 1
     dev_correct = 0.0
@@ -240,9 +246,38 @@ def main():
         sys.stdout.write(" " * num_back)
         sys.stdout.write("\b" * num_back)
         print('train: %d loss: %.4f, time: %.2fs' % (num_batches, train_err / train_total, time.time() - start_time))
+        writer.add_scalar("loss/train", train_err / train_total, epoch)
+
+        network.eval()
+        # evaluate performace on train data
+        train_corr = 0.0
+        train_total = 0.0
+        for batch in conllx_data.iterate_batch_variable(data_train, batch_size):
+            word, char, labels, _, _, masks, lengths = batch
+            preds, corr = network.decode(word, char, target=labels, mask=masks,
+                                         leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+            num_tokens = masks.data.sum()
+            train_corr += corr
+            train_total += num_tokens
+        print('train corr: %d, total: %d, acc: %.2f%%' % (train_corr, train_total, train_corr/ train_total * 100 ))
+        writer.add_scalar("acc/train", train_corr / train_total * 100, epoch)
+
+        # evaluate loss on dev data
+        dev_err = 0.0
+        dev_total = 0
+        start_time = time.time()
+        for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
+            word, char, labels, _, _, masks, lengths = batch
+
+            loss = network.loss(word, char, labels, mask=masks)
+
+            num_inst = word.size(0)
+            dev_err += loss.data[0] * num_inst
+            dev_total += num_inst
+        print('dev loss: %.4f, time: %.2fs' % (dev_err / dev_total, time.time() - start_time))
+        writer.add_scalar("loss/dev", dev_err / dev_total, epoch)
 
         # evaluate performance on dev data
-        network.eval()
         dev_corr = 0.0
         dev_total = 0
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
@@ -256,6 +291,7 @@ def main():
             dev_corr += corr
             dev_total += num_tokens
         print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
+        writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
 
         if dev_correct < dev_corr:
             dev_correct = dev_corr
@@ -280,7 +316,7 @@ def main():
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
             optim = SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma, nesterov=True)
-
+    writer.close()
 
 if __name__ == '__main__':
     main()

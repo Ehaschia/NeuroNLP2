@@ -356,12 +356,12 @@ class ChainLVeG(nn.Module):
         # forward_score = logsumexp(forward[-1, :, :, 2], dim=1)
         # backword_score = logsumexp(backward[-1, :, -1, :], dim=1)
         # err = forward_score - backword_score
-
         backward = reverse_padded_sequence(backward.contiguous(), mask_transpose, batch_first=False)
         forward = torch.cat((holder, forward), dim=0)
         backward = torch.cat((backward, holder), dim=0)
 
         cnt = forward + backward
+        cnt = cnt * mask_transpose.unsqueeze(2).unsqueeze(3)
         cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
         length, batch_size, num_label, _ = cnt_transpose.size()
