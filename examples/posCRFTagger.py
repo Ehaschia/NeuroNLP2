@@ -133,9 +133,9 @@ def main():
     num_data = sum(data_train[1])
     num_labels = pos_alphabet.size()
 
-    data_dev = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
+    data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
-    data_test = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
+    data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
                                                   use_gpu=use_gpu, volatile=True, symbolic_end=True)
 
     def construct_word_embedding_table():
@@ -249,9 +249,9 @@ def main():
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
-            if epoch >= 30:
-                store_label(epoch, preds, labels.data)
-                exit(0)
+            # if epoch >= 30:
+            #     store_label(epoch, preds, labels.data)
+            #     exit(0)
             num_tokens = masks.data.sum()
             dev_corr += corr
             dev_total += num_tokens

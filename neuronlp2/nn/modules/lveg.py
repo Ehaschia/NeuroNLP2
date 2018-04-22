@@ -6,6 +6,7 @@ from torch.autograd import Variable
 from neuronlp2.nlinalg import logsumexp
 import numpy as np
 import torch.nn.functional as F
+from neuronlp2.nn.utils import sequence_mask, reverse_padded_sequence
 
 
 class ChainLVeG(nn.Module):
@@ -211,57 +212,22 @@ class ChainLVeG(nn.Module):
 
             var = n1_var + n2_var - 0.5 * var_log_square_add
             scale = torch.sum(scale, dim=-1)
-            # check_numerics(scale)
-            # check_numerics(mu)
-            # check_numerics(var)
             return scale, mu, var
 
-        # scale  format [batch, length-1, num_labels, num_labels]
-        #               [batch, length-1, t(s part) , t+1(t part)]
-        # tensor format [batch, length-1, num_labels, num_labels, gaussian_dim]
-        # fixme alert the unsqueeze dim
-        # sp_scale, sp_mu, sp_var = gaussian_multi(s_mu.unsqueeze(3), s_var.unsqueeze(3), t_p_mu, t_p_var)
-        # sp_scale = sp_scale + s_weight[:, :-1, :].unsqueeze(3) + t_weight[:, :-1, :, :]
         cs_scale, cs_mu, cs_var = gaussian_multi(s_mu.unsqueeze(2), s_var.unsqueeze(2), t_c_mu, t_c_var)
 
         cs_scale = cs_scale + s_weight.unsqueeze(2)
-        # scale  format [batch, 1, num_labels, num_labels]
-        #               [batch, 1, t(s part),  t-1(c part)]
-        # tensor format [batch, 1, num_labels, num_labels, gaussian_dim]
 
-        # sc_scale, _, _ = gaussian_multi(s_mu[:, -1, :, :, :].unsqueeze(2), s_var[:, -1, :, :, :].unsqueeze(2),
-        #                                 t_c_mu[:, -2, :, :, :], t_c_var[:, -2, :, :, :])
-        # sc_scale = sc_scale + s_weight[:, -1, :, :].unsqueeze(2) + t_weight[:, -2, :, :]
-        # transpose to let (rule -> non-terminal)
-        # scale format [batch, 1, t-1(c part), t(s part)]
-        # sc_scale = sc_scale.transpose(2, 3)
-
-        # scale  format [batch, length-1, num_labels, num_labels, num_labels]
-        #               [batch, length-1, t-1(c part),t(s part) , t+1(p part)]
-        # tensor format [batch, length-1, num_labels, num_labels, gaussian_dim]
-        # spc_scale, _, _ = gaussian_multi(t_c_mu[:, :-1, :, :, :].unsqueeze(4), t_c_var[:, :-1, :, :, :].unsqueeze(4),
-        #                                  sp_mu[:, 1:, :, :, :].unsqueeze(2), sp_var[:, 1:, :, :, :].unsqueeze(2))
         csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1, :, :, :].unsqueeze(4), cs_var[:, :-1, :, :, :].unsqueeze(4),
                                          t_p_mu[:, 1:, :, :, :].unsqueeze(2), t_p_var[:, 1:, :, :, :].unsqueeze(2))
 
-        # spc_scale = logsumexp(spc_scale, dim=2) + sp_scale[:, 1:, :, :] + t_weight[:, 1:-1, :, :]
-
         csp_scale = csp_scale + cs_scale[:, :-1, :, :].unsqueeze(4) + t_weight[:, 1:, :, :].unsqueeze(2)
 
-        # check_numerics(csp_scale)
-        # Total t_0 format [batch, 1, num_labels, num_labels]
-        #       t_1-t_n-1 format [batch, n-2, num_labels, num_labels, num_labels]
-        #       t_n format [batch, 1, num_labels, num_labels]
-        # tensor format [batch, length, num_labels, num_labels]
-        # output = torch.cat((sp_scale[:, 0, :, :].unsqueeze(1).unsqueeze(4).expand(batch, 1, self.num_labels,
-        #                                                                           self.num_labels, self.num_labels)
-        #                     , spc_scale), dim=1)
         output = torch.cat((csp_scale, cs_scale[:, -1, :, :].unsqueeze(1).unsqueeze(4).expand(batch, 1, self.num_labels,
                                                                                               self.num_labels,
                                                                                               self.num_labels)), dim=1)
         if mask is not None:
             output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4)
-        # check_numerics(output)
         return output
 
     def loss(self, input, target, mask=None):
@@ -364,26 +330,37 @@ class ChainLVeG(nn.Module):
 
         length, batch_size, num_label, _, _ = energy_transpose.size()
 
+        reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
         # Forward word and Backward
         # Todo lexicon rule expected count
-
         forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
-        backward = torch.zeros([length, batch_size, num_label, num_label]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
         holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
+
         for i in range(0, length - 1):
             if i == 0:
                 forward[i] = energy_transpose[i, :, -1, :, :]
+                backward[i] = reverse_energy_transpose[i, :, :, :, 2]
             else:
                 forward[i] = logsumexp(forward[i - 1].unsqueeze(3) + energy_transpose[i], dim=1)
-        for i in reversed(range(0, length)):
-            if i == length - 1:
-                # last dim is expanded
-                backward[i] = energy_transpose[i, :, :, :, 0] * mask_transpose[i].unsqueeze(1).unsqueeze(2)
-            else:
-                backward[i] = logsumexp(backward[i + 1].unsqueeze(1) + energy_transpose[i], dim=3)
-                backward[i] = backward[i] * mask_transpose[i].unsqueeze(1).unsqueeze(2)
-        # cnt shape [length, batch_size, num_label, num_label]
+                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i].unsqueeze(1).unsqueeze(
+                    2)
+                # backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3) \
+                #               * mask_transpose[i].unsqueeze(1).unsqueeze(2)
+                backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3)
+                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i].unsqueeze(
+                    1).unsqueeze(2)
+
+        # detect score calculate by forward and backward, should be equal
+
+        # forward_score = logsumexp(forward[-1, :, :, 2], dim=1)
+        # backword_score = logsumexp(backward[-1, :, -1, :], dim=1)
+        # err = forward_score - backword_score
+
+        backward = reverse_padded_sequence(backward.contiguous(), mask_transpose, batch_first=False)
         forward = torch.cat((holder, forward), dim=0)
+        backward = torch.cat((backward, holder), dim=0)
+
         cnt = forward + backward
         cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
 

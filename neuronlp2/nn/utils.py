@@ -123,6 +123,7 @@ def reverse_padded_sequence(inputs, lengths, batch_first=False):
                         for _ in range(inputs.size(0))]
 
     input_size = inputs.size()
+    inputs = inputs.contiguous()
     inputs = inputs.view(input_size[0], input_size[1], -1)
 
     for i, length in enumerate(lengths):
