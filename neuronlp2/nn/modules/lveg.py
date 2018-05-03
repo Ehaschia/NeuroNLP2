@@ -36,6 +36,8 @@ class ChainLVeG(nn.Module):
         self.bigram = bigram
         self.spherical = spherical
         self.gaussian_dim = gaussian_dim
+        self.min_clip = -5.0
+        self.max_clip = 5.0
         # Gaussian for every emission rule
         # weight and var is log form
         self.state_nn_weight = nn.Linear(self.input_size, self.num_labels)
@@ -136,12 +138,14 @@ class ChainLVeG(nn.Module):
         s_weight = self.state_nn_weight(input)
 
         s_mu = self.state_nn_mu(input).view(batch, length, self.num_labels, self.gaussian_dim)
-        # s_mu = F.tanh(s_mu)
+        # s_mu = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
+
         if self.spherical:
             s_var = self.state_nn_var(input).view(batch, length, 1, 1, 1)
             s_var = s_var.expand(batch, length, self.num_labels, self.gaussian_dim)
         else:
             s_var = self.state_nn_var(input).view(batch, length, self.num_labels, self.gaussian_dim)
+        # s_var = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
         # t_weight size [batch, length, num_label, num_label]
         # mu and var size [batch, length, num_label, num_label, gaussian_dim]
         # var spherical [batch, length, 1, 1, 1]
@@ -177,19 +181,31 @@ class ChainLVeG(nn.Module):
                 t_c_var = self.trans_mat_c_var.expand(batch, length, self.num_labels, self.num_labels,
                                                       self.gaussian_dim)
 
+        # t_p_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
+        # t_p_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
+        # t_c_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
+        # t_c_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
+
+
         # Gaussian Multiply:
         # in math S*N` = N1*N2
         # here S is scale, S = -(1/2)*log(2pi + sigma1^2 + sigma2^2) - (1/2)*(mu1 -mu2)^2/(sigma1^2 + sigma2^2) is log form
         # mu of N` is (mu1*sigma2^2 + mu2^sigma1^2)/(sigma1^2 + sigma2^2)
         # var of N` is log(sigma1) + log(sigma2) - (1/2)*log(sigma1^2 + sigma2^2)
 
-        s_mu = F.tanh(s_mu)
-        s_var = F.tanh(s_var)
-        t_p_mu = F.tanh(t_p_mu)
-        t_p_var = F.tanh(t_p_var)
-        t_c_mu = F.tanh(t_c_mu)
-        t_c_var = F.tanh(t_c_var)
+        # s_mu = F.tanh(s_mu)
+        # s_var = F.tanh(s_var)
+        # t_p_mu = F.tanh(t_p_mu)
+        # t_p_var = F.tanh(t_p_var)
+        # t_c_mu = F.tanh(t_c_mu)
+        # t_c_var = F.tanh(t_c_var)
 
+        s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
+        s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
+        t_p_mu = torch.clamp(t_p_mu, min=self.min_clip, max=self.max_clip)
+        t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
+        t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
+        t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
         # check_numerics(s_weight)
         # check_numerics(s_mu)
         # check_numerics(s_var)
@@ -297,11 +313,11 @@ class ChainLVeG(nn.Module):
                 prev_label = target_transpose[t].data
         # check_numerics(partition)
         # check_numerics(tgt_energy)
+        # if torch.min(logsumexp(partition, dim=1) - tgt_energy).data[0] < 0.0:
+        #     print("ERROR")
         return logsumexp(partition, dim=1) - tgt_energy
 
     def decode(self, input, mask=None, leading_symbolic=0):
-        # fixme the decoder is wrong, should implement max-rule parser
-        #
         """
 
         Args:
@@ -332,7 +348,6 @@ class ChainLVeG(nn.Module):
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
         # Forward word and Backward
-        # Todo lexicon rule expected count
         forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
         backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
         holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
@@ -361,9 +376,9 @@ class ChainLVeG(nn.Module):
         backward = torch.cat((backward, holder), dim=0)
 
         cnt = forward + backward
-        cnt = cnt * mask_transpose.unsqueeze(2).unsqueeze(3)
-        cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
-
+        # cnt = cnt * mask_transpose.unsqueeze(2).unsqueeze(3)
+        # cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
+        cnt_transpose = cnt[:, :, :-1, :-1]
         length, batch_size, num_label, _ = cnt_transpose.size()
 
         if input.is_cuda:
@@ -377,11 +392,10 @@ class ChainLVeG(nn.Module):
             pointer = torch.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
-        # pi[0] = energy[:, 0, -1, leading_symbolic:-1]
         # viterbi docoding?
-        pi[0] = cnt[0, :, -1, leading_symbolic:-1]
+        pi[0] = cnt[0, :, -1, :-1]
         pointer[0] = -1
-        for t in range(1, length - 1):
+        for t in range(1, length):
             pi_prev = pi[t - 1]
             pi[t], pointer[t] = torch.max(cnt_transpose[t] + pi_prev, dim=1)
 
@@ -390,4 +404,4 @@ class ChainLVeG(nn.Module):
             pointer_last = pointer[t + 1]
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
 
-        return back_pointer.transpose(0, 1) + leading_symbolic
+        return back_pointer.transpose(0, 1)

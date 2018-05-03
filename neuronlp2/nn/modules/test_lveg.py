@@ -10,6 +10,8 @@ from torch.nn import Embedding
 from neuronlp2.io import get_logger, conllx_data
 import time
 import sys
+from tensorboardX import SummaryWriter
+import torch.nn.functional as F
 
 
 class ChainCRF(nn.Module):
@@ -149,7 +151,7 @@ class ChainCRF(nn.Module):
         # the last row and column is the tag for pad symbol. reduce these two dimensions by 1 to remove that.
         # also remove the first #symbolic rows and columns.
         # now the shape of energies_shuffled is [n_time_steps, b_batch, t, t] where t = num_labels - #symbolic - 1.
-        energy_transpose = energy_transpose[:, :, leading_symbolic:-2, leading_symbolic:-2]
+        energy_transpose = energy_transpose[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
         length, batch_size, num_label, _ = energy_transpose.size()
 
@@ -208,14 +210,35 @@ class lveg(nn.Module):
         batch, length = input.size()
 
         s_mu = self.s_mu_em(input).view(batch, length, self.num_labels, self.gaussian_dim)
-        s_weight = self.s_weight_em(input).view(batch, length, self.num_labels)
+        # s_weight = self.s_weight_em(input).view(batch, length, self.num_labels)
+        s_weight = Variable(torch.zeros(batch, length, self.num_labels)).cuda()
         s_var = self.s_var_em(input).view(batch, length, self.num_labels, self.gaussian_dim)
 
-        t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels).expand(batch, length, self.num_labels, self.num_labels)
-        t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-        t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-        t_c_var = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
+        # t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels).expand(batch, length, self.num_labels, self.num_labels)
+        t_weight = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels)).cuda()
+        t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
+                                                                                                        self.num_labels,
+                                                                                                        self.num_labels,
+                                                                                                        self.gaussian_dim)
+        t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
+                                                                                                          self.num_labels,
+                                                                                                          self.num_labels,
+                                                                                                          self.gaussian_dim)
+        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
+                                                                                                        self.num_labels,
+                                                                                                        self.num_labels,
+                                                                                                        self.gaussian_dim)
+        t_c_var = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
+                                                                                                         self.num_labels,
+                                                                                                         self.num_labels,
+                                                                                                         self.gaussian_dim)
+
+        s_mu = F.tanh(s_mu)
+        s_var = F.tanh(s_var)
+        t_p_mu = F.tanh(t_p_mu)
+        t_p_var = F.tanh(t_p_var)
+        t_c_mu = F.tanh(t_c_mu)
+        t_c_var = F.tanh(t_c_var)
 
         def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
             n1_var_square = torch.exp(2.0 * n1_var)
@@ -250,7 +273,7 @@ class lveg(nn.Module):
     def loss(self, sents, target, mask):
         batch, length = sents.size()
         energy = self.forward(sents, mask)
-        is_cuda = False
+        is_cuda = True
         if mask is not None:
             mask_transpose = mask.transpose(0, 1).unsqueeze(2).unsqueeze(3)
         else:
@@ -298,23 +321,22 @@ class lveg(nn.Module):
             else:
                 tgt_energy += curr_energy[batch_index, prev_label, target_transpose[t], holder]
                 prev_label = target_transpose[t]
-        return logsumexp(partition, dim=1) - tgt_energy
+        return (logsumexp(partition, dim=1) - tgt_energy).mean()
 
-    def decode(self, sents, mask, leading_symbolic=0):
-        is_cuda = False
+    def decode(self, sents, target, mask, lengths, leading_symbolic=0):
+        is_cuda = True
         energy = self.forward(sents, mask).data
         energy_transpose = energy.transpose(0, 1)
         mask_transpose = mask.transpose(0, 1).data
         length, batch_size, num_label, _, _ = energy_transpose.size()
 
         # Forward word and Backward
-        # Todo lexicon rule expected count
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
 
-        forward = torch.zeros([length - 1, batch_size, num_label, num_label])
-        backward = torch.zeros([length - 1, batch_size, num_label, num_label])
-        holder = torch.zeros([1, batch_size, num_label, num_label])
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
+        holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
 
         for i in range(0, length - 1):
             if i == 0:
@@ -322,11 +344,13 @@ class lveg(nn.Module):
                 backward[i] = reverse_energy_transpose[i, :, :, :, 2]
             else:
                 forward[i] = logsumexp(forward[i - 1].unsqueeze(3) + energy_transpose[i], dim=1)
-                forward[i] = forward[i-1] + (forward[i] - forward[i-1])* mask_transpose[i].unsqueeze(1).unsqueeze(2)
+                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i].unsqueeze(1).unsqueeze(
+                    2)
                 # backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3) \
                 #               * mask_transpose[i].unsqueeze(1).unsqueeze(2)
                 backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3)
-                backward[i] = backward[i-1] + (backward[i] - backward[i-1]) * mask_transpose[i].unsqueeze(1).unsqueeze(2)
+                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i].unsqueeze(
+                    1).unsqueeze(2)
 
         # detect score calculate by forward and backward, should be equal
         # it is right to be here?
@@ -366,8 +390,16 @@ class lveg(nn.Module):
         for t in reversed(range(length - 1)):
             pointer_last = pointer[t + 1]
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
-
-        return back_pointer.transpose(0, 1) + leading_symbolic
+        preds = back_pointer.transpose(0, 1) + leading_symbolic
+        if target is None:
+            return preds, None
+        # if lengths is not None:
+        #     max_len = lengths.max()
+        #     target = target[:, :max_len]
+        if mask is None:
+            return preds, torch.eq(preds, target.data).float().sum()
+        else:
+            return preds, (torch.eq(preds, target.data).float() * mask.data).sum()
 
 
 softmax = nn.Softmax()
@@ -433,9 +465,6 @@ def main():
     num_labels = 5
     words = 10
 
-    torch.random.manual_seed(48)
-    np.random.seed(48)
-
     trans_rule = Variable(torch.rand(num_labels, num_labels))
     trans_rule = softmax(trans_rule).data.numpy()
     emmsion_rule = Variable(torch.rand(num_labels, words))
@@ -488,25 +517,32 @@ def main():
 
 
 def natural_data():
-    batch_size = 16
-    num_epochs = 10
-    gaussian_dim = 1
-    learning_rate = 1e-3
+    batch_size = 4
+    num_epochs = 200
+    gaussian_dim = 3
+    learning_rate = 1e-2
     momentum = 0.9
     gamma = 0.0
-    schedule = 5
+    schedule = 500
     decay_rate = 0.05
+    torch.cuda.device(1)
+    use_tb = False
+    if use_tb:
+        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-lr0.1-dim2")
+    else:
+        writer = None
 
-    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
-    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
+    # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    train_path = "/home/zhaoyp/Data/pos/toy10"
+    dev_path = "/home/zhaoyp/Data/pos/toy10"
+    test_path = "/home/zhaoyp/Data/pos/toy10"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy10/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
@@ -518,20 +554,27 @@ def natural_data():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet,
-                                                   use_gpu=False, symbolic_end=True)
+                                                   type_alphabet, normalize_digits=False,
+                                                   use_gpu=use_gpu, symbolic_end=True)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True,
+                                                 normalize_digits=False)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True,
+                                                  normalize_digits=False)
 
     network = lveg(pos_alphabet.size(), gaussian_dim, word_alphabet.size())
 
+    # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
+    if use_gpu:
+        network.cuda()
+
     lr = learning_rate
     optim = torch.optim.SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma)
+    # optim = torch.optim.Adam(network.parameters(), lr=lr, weight_decay=gamma)
 
     num_batches = num_data / batch_size + 1
     dev_correct = 0.0
@@ -550,7 +593,7 @@ def natural_data():
         network.train()
         for batch in range(1, num_batches + 1):
             word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
-                                                                                   unk_replace=1.0)
+                                                                                   unk_replace=0.0)
 
             optim.zero_grad()
             loss = network.loss(word, labels, mask=masks).mean()
@@ -579,6 +622,8 @@ def natural_data():
         sys.stdout.write(" " * num_back)
         sys.stdout.write("\b" * num_back)
         print('train: %d loss: %.4f, time: %.2fs' % (num_batches, train_err / train_total, time.time() - start_time))
+        if use_tb:
+            writer.add_scalar("loss/train", train_err / train_total, epoch)
 
         # evaluate performance on dev data
         network.eval()
@@ -586,16 +631,18 @@ def natural_data():
         dev_total = 0
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
             word, char, labels, _, _, masks, lengths = batch
-            preds, corr = network.decode(word, mask=masks,
+            preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             # if epoch >= 30:
             #     store_label(epoch, preds, labels.data)
             #     exit(0)
-            corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
+            # corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
             num_tokens = masks.data.sum()
             dev_corr += corr
             dev_total += num_tokens
         print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
+        if use_tb:
+            writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
 
         if dev_correct < dev_corr:
             dev_correct = dev_corr
@@ -606,9 +653,9 @@ def natural_data():
             test_total = 0
             for batch in conllx_data.iterate_batch_variable(data_test, batch_size):
                 word, char, labels, _, _, masks, lengths = batch
-                preds = network.decode(word, mask=masks,
-                                       leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
-                corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
+                preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
+                                             leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+                # corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
                 num_tokens = masks.data.sum()
                 test_corr += corr
                 test_total += num_tokens
@@ -621,8 +668,53 @@ def natural_data():
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
             optim = torch.optim.SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma, nesterov=True)
+    if use_tb:
+        writer.close()
+
+
+def store_param(network, epoch, pos, word):
+    with open("lveg_" + str(epoch), 'w') as f:
+        f.write("pos label \n")
+        f.write(str(pos.instance2index))
+        f.write("\n\n")
+
+        f.write("word label\n")
+        f.write(str(word.instance2index))
+        f.write("\n\n")
+
+        f.write("s_mu\n")
+        s_mu = np.array2string(network.s_mu_em.weight.data.cpu().numpy(), precision=2, separator=',',
+                               suppress_small=True)
+        f.write(s_mu)
+        f.write("\n\n")
+        f.write("s_var\n")
+        s_var = np.array2string(network.s_var_em.weight.data.cpu().numpy(), precision=2, separator=',',
+                                suppress_small=True)
+        f.write(s_var)
+        f.write("\n\n")
+        f.write("t_p_mu\n")
+        t_p_mu = np.array2string(network.trans_p_mu.data.squeeze(2).cpu().numpy(), precision=2, separator=',',
+                                 suppress_small=True)
+        f.write(t_p_mu)
+        f.write("\n\n")
+        f.write("t_p_var\n")
+        t_p_var = np.array2string(network.trans_p_var.data.squeeze(2).cpu().numpy(), precision=2, separator=',',
+                                  suppress_small=True)
+        f.write(t_p_var)
+        f.write("\n\n")
+        f.write("t_c_mu\n")
+        t_c_mu = np.array2string(network.trans_c_mu.data.squeeze(2).cpu().numpy(), precision=2, separator=',',
+                                 suppress_small=True)
+        f.write(t_c_mu)
+        f.write("\n\n")
+        f.write("t_c_var\n")
+        t_c_var = np.array2string(network.trans_c_var.data.squeeze(2).cpu().numpy(), precision=2, separator=',',
+                                  suppress_small=True)
+        f.write(t_c_var)
 
 
 if __name__ == '__main__':
+    torch.random.manual_seed(480)
+    np.random.seed(480)
     natural_data()
     # main()

@@ -22,6 +22,8 @@ from neuronlp2.models import BiRecurrentConvCRF, BiVarRecurrentConvCRF, BiRecurr
 from neuronlp2 import utils
 import os.path
 from tensorboardX import SummaryWriter
+from neuronlp2.nn.modules import lveg
+
 
 def store_label(epoch, pred, gold):
     if not os.path.exists(str(epoch) + '_pre'):
@@ -47,6 +49,12 @@ def store_label(epoch, pred, gold):
             f.write('\n'.join(gold))
             f.write('\n')
 
+
+def detect_err(loss, pre_loss):
+    if (loss - pre_loss) > 5:
+        print("detect error!")
+    pre_loss = loss
+    return pre_loss
 
 def main():
     parser = argparse.ArgumentParser(description='Tuning with bi-directional RNN-CNN-CRF')
@@ -79,6 +87,7 @@ def main():
     parser.add_argument('--language', type=str, default='wsj')
     parser.add_argument('--spherical', default=False, action='store_true')
     parser.add_argument('--gaussian-dim', type=int, default=1)
+    parser.add_argument('--use-tensorboard', default=False, action='store_true')
     parser.add_argument('--log-dir', type=str, default='./tensorboard/')
 
     args = parser.parse_args()
@@ -103,6 +112,7 @@ def main():
     p_out = args.p_out
     unk_replace = args.unk_replace
     bigram = args.bigram
+    use_tb = args.use_tensorboard
 
     embedding = args.embedding
     embedding_path = args.embedding_dict
@@ -173,7 +183,7 @@ def main():
             network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                           window, mode, hidden_size, num_layers, num_labels,
                                           tag_space=tag_space, embedd_word=word_table, bigram=bigram, p_in=p_in,
-                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer)
+                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer, gaussian_dim=args.gaussian_dim)
         else:
             network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                          window, mode, hidden_size, num_layers, num_labels,
@@ -193,22 +203,25 @@ def main():
     lr = learning_rate
     optim = SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma)
     logger.info("Network: %s, num_layer=%d, hidden=%d, filter=%d, tag_space=%d, crf=%s" % (
-    mode, num_layers, hidden_size, num_filters, tag_space, 'bigram' if bigram else 'unigram'))
+        mode, num_layers, hidden_size, num_filters, tag_space, 'bigram' if bigram else 'unigram'))
     logger.info("training: l2: %f, (#training data: %d, batch: %d, unk replace: %.2f)" % (
-    gamma, num_data, batch_size, unk_replace))
+        gamma, num_data, batch_size, unk_replace))
     logger.info("dropout(in, out, rnn): (%.2f, %.2f, %s)" % (p_in, p_out, p_rnn))
-
-    writer = SummaryWriter(log_dir=args.log_dir + "/" + network_name)
-    writer.add_text('config', str(args))
+    if use_tb:
+        writer = SummaryWriter(log_dir=args.log_dir + "/" + network_name)
+        writer.add_text('config', str(args))
+    else:
+        writer = None
 
     num_batches = num_data / batch_size + 1
     dev_correct = 0.0
     best_epoch = 0
     test_correct = 0.0
     test_total = 0
+    pre_loss = 100
     for epoch in range(1, num_epochs + 1):
         print('Epoch %d (%s(%s), learning rate=%.4f, decay rate=%.4f (schedule=%d)): ' % (
-        epoch, mode, args.dropout, lr, decay_rate, schedule))
+            epoch, mode, args.dropout, lr, decay_rate, schedule))
         train_err = 0.
         train_total = 0.
 
@@ -221,6 +234,7 @@ def main():
 
             optim.zero_grad()
             loss = network.loss(word, char, labels, mask=masks)
+            # loss = network.loss(word, labels, masks)
             loss.backward()
             optim.step()
 
@@ -237,7 +251,7 @@ def main():
                 sys.stdout.write(" " * num_back)
                 sys.stdout.write("\b" * num_back)
                 log_info = 'train: %d/%d loss: %.4f, time left (estimated): %.2fs' % (
-                batch, num_batches, train_err / train_total, time_left)
+                    batch, num_batches, train_err / train_total, time_left)
                 sys.stdout.write(log_info)
                 sys.stdout.flush()
                 num_back = len(log_info)
@@ -246,8 +260,9 @@ def main():
         sys.stdout.write(" " * num_back)
         sys.stdout.write("\b" * num_back)
         print('train: %d loss: %.4f, time: %.2fs' % (num_batches, train_err / train_total, time.time() - start_time))
-        writer.add_scalar("loss/train", train_err / train_total, epoch)
-
+        if use_tb:
+            writer.add_scalar("loss/train", train_err / train_total, epoch)
+        pre_loss = detect_err(train_err / train_total, pre_loss)
         network.eval()
         # evaluate performace on train data
         train_corr = 0.0
@@ -256,11 +271,14 @@ def main():
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+            # preds, corr = network.decode(word, target=labels, mask=masks, lengths=lengths,
+            #                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             num_tokens = masks.data.sum()
             train_corr += corr
             train_total += num_tokens
-        print('train corr: %d, total: %d, acc: %.2f%%' % (train_corr, train_total, train_corr/ train_total * 100 ))
-        writer.add_scalar("acc/train", train_corr / train_total * 100, epoch)
+        print('train corr: %d, total: %d, acc: %.2f%%' % (train_corr, train_total, train_corr / train_total * 100))
+        if use_tb:
+            writer.add_scalar("acc/train", train_corr / train_total * 100, epoch)
 
         # evaluate loss on dev data
         dev_err = 0.0
@@ -270,12 +288,14 @@ def main():
             word, char, labels, _, _, masks, lengths = batch
 
             loss = network.loss(word, char, labels, mask=masks)
+            # loss = network.loss(word, labels, mask=masks)
 
             num_inst = word.size(0)
             dev_err += loss.data[0] * num_inst
             dev_total += num_inst
         print('dev loss: %.4f, time: %.2fs' % (dev_err / dev_total, time.time() - start_time))
-        writer.add_scalar("loss/dev", dev_err / dev_total, epoch)
+        if use_tb:
+            writer.add_scalar("loss/dev", dev_err / dev_total, epoch)
 
         # evaluate performance on dev data
         dev_corr = 0.0
@@ -284,6 +304,8 @@ def main():
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+            # preds, corr = network.decode(word, target=labels, mask=masks, lengths=lengths,
+            #                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             # if epoch >= 30:
             #     store_label(epoch, preds, labels.data)
             #     exit(0)
@@ -291,7 +313,8 @@ def main():
             dev_corr += corr
             dev_total += num_tokens
         print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
-        writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
+        if use_tb:
+            writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
 
         if dev_correct < dev_corr:
             dev_correct = dev_corr
@@ -304,19 +327,27 @@ def main():
                 word, char, labels, _, _, masks, lengths = batch
                 preds, corr = network.decode(word, char, target=labels, mask=masks,
                                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
+                # preds, corr = network.decode(word, target=labels, mask=masks,lengths=lengths,
+                #                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
                 num_tokens = masks.data.sum()
                 test_corr += corr
                 test_total += num_tokens
             test_correct = test_corr
-        print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-        dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
-        print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-        test_correct, test_total, test_correct * 100 / test_total, best_epoch))
+        if dev_total != 0:
+            print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+                dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
+        if test_total != 0:
+            print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+                test_correct, test_total, test_correct * 100 / test_total, best_epoch))
 
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
             optim = SGD(network.parameters(), lr=lr, momentum=momentum, weight_decay=gamma, nesterov=True)
-    writer.close()
+    if use_tb:
+        writer.close()
+
 
 if __name__ == '__main__':
+    torch.random.manual_seed(480)
+    np.random.seed(480)
     main()

@@ -64,7 +64,6 @@ class BiRecurrentConv(nn.Module):
         # we do not hack mask from length for special reasons.
         # Thus, always provide mask if it is necessary.
         if length is None and mask is not None:
-            # fixme is this right?
             length = mask.data.sum(dim=1).long() + 1
 
         # [batch, length, word_dim]
@@ -324,6 +323,8 @@ class BiRecurrentConvLVeG(BiRecurrentConv):
     def forward(self, input_word, input_char, mask=None, length=None, hx=None):
         # output from rnn [batch, length, tag_space]
         output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=length, hx=hx)
+        # output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=None, hx=hx)
+
         # [batch, length, num_label,  num_label]
         return self.lveg(output, mask=mask), mask
 
