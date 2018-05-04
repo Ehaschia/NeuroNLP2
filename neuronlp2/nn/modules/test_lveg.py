@@ -4,7 +4,6 @@ import math
 from neuronlp2.nlinalg import logsumexp
 import numpy as np
 from neuronlp2.nn.utils import sequence_mask, reverse_padded_sequence
-from torch.autograd import Variable
 from torch.nn.parameter import Parameter
 from torch.nn import Embedding
 from neuronlp2.io import get_logger, conllx_data
@@ -101,12 +100,12 @@ class ChainCRF(nn.Module):
             # shape = [batch]
             batch_index = torch.arange(0, batch).long().cuda()
             prev_label = torch.cuda.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch)).cuda()
+            tgt_energy = torch.zeros(batch, requires_grad=True).cuda()
         else:
             # shape = [batch]
             batch_index = torch.arange(0, batch).long()
             prev_label = torch.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch))
+            tgt_energy = torch.zeros(batch, requires_grad=True)
 
         for t in range(length):
             # shape = [batch, num_label, num_label]
@@ -201,11 +200,11 @@ class lveg(nn.Module):
         self.reset_parameter()
 
     def reset_parameter(self):
-        nn.init.xavier_normal(self.trans_weight)
-        nn.init.xavier_normal(self.trans_p_mu)
-        nn.init.xavier_normal(self.trans_p_var)
-        nn.init.xavier_normal(self.trans_c_mu)
-        nn.init.xavier_normal(self.trans_c_var)
+        nn.init.xavier_normal_(self.trans_weight)
+        nn.init.xavier_normal_(self.trans_p_mu)
+        nn.init.xavier_normal_(self.trans_p_var)
+        nn.init.xavier_normal_(self.trans_c_mu)
+        nn.init.xavier_normal_(self.trans_c_var)
 
     def forward(self, input, mask):
 
@@ -225,7 +224,7 @@ class lveg(nn.Module):
         t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
         t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
         t_c_mu = t_c_mu.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
-        t_c_var = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
         t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
 
         # s_mu = F.tanh(s_mu)
@@ -281,6 +280,7 @@ class lveg(nn.Module):
         return output
 
     def loss(self, sents, target, mask):
+        # fixme not calculate the toy sample by hand,because is too hard
         batch, length = sents.size()
         energy = self.forward(sents, mask)
         is_cuda = True
@@ -299,13 +299,13 @@ class lveg(nn.Module):
             # shape = [batch]
             batch_index = torch.arange(0, batch).long().cuda()
             prev_label = torch.cuda.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch, self.component)).cuda()
+            tgt_energy = torch.zeros(batch, self.component, requires_grad=True).cuda()
             holder = torch.zeros(batch).long().cuda()
         else:
             # shape = [batch]
             batch_index = torch.arange(0, batch).long()
             prev_label = torch.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch, self.component))
+            tgt_energy = torch.zeros(batch, self.component, requires_grad=True)
             holder = torch.zeros(batch).long()
 
         for t in range(length):
@@ -342,17 +342,19 @@ class lveg(nn.Module):
         is_cuda = True
         energy = self.forward(sents, mask).data
         energy_transpose = energy.transpose(0, 1)
-        mask_transpose = mask.transpose(0, 1).data
+        # fixme convert mask to Tensor
+        mask = mask.data
+        mask_transpose = mask.transpose(0, 1)
         length, batch_size, num_label, _, _, _, _, _ = energy_transpose.size()
 
         # Forward word and Backward
 
-        reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
+        reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask, batch_first=False)
 
         forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
         backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
-        holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
-        mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3)
+        holder = torch.zeros([1, batch_size, num_label, num_label, self.component]).cuda()
+        mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3).unsqueeze(4)
         # fixme version 2  remove leading_symbolic before expect_count
         for i in range(0, length - 1):
             if i == 0:
@@ -372,7 +374,7 @@ class lveg(nn.Module):
         backword_score = logsumexp(logsumexp(backward[-1, :, -1, :], dim=-1), dim=1)
         err = forward_score - backword_score
 
-        backward = reverse_padded_sequence(backward.contiguous(), mask_transpose, batch_first=False)
+        backward = reverse_padded_sequence(backward.contiguous(), mask, batch_first=False)
         forward = torch.cat((holder, forward), dim=0)
         backward = torch.cat((backward, holder), dim=0)
 
@@ -383,12 +385,12 @@ class lveg(nn.Module):
 
         if is_cuda:
             batch_index = torch.arange(0, batch_size).long().cuda()
-            pi = torch.zeros([length, batch_size, num_label, 1]).cuda()
+            pi = torch.zeros([length, batch_size, num_label]).cuda()
             pointer = torch.cuda.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.cuda.LongTensor(length, batch_size).zero_()
         else:
             batch_index = torch.arange(0, batch_size).long()
-            pi = torch.zeros([length, batch_size, num_label, 1])
+            pi = torch.zeros([length, batch_size, num_label])
             pointer = torch.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
@@ -397,7 +399,7 @@ class lveg(nn.Module):
         pi[0] = cnt[0, :, -1, leading_symbolic:-1]
         pointer[0] = -1
         for t in range(1, length - 1):
-            pi_prev = pi[t - 1]
+            pi_prev = pi[t - 1].unsqueeze(2)
             pi[t], pointer[t] = torch.max(cnt_transpose[t] + pi_prev, dim=1)
 
         _, back_pointer[-1] = torch.max(pi[-1], dim=1)
@@ -417,33 +419,33 @@ class lveg(nn.Module):
 
 
 def natural_data():
-    batch_size = 4
-    num_epochs = 200
+    batch_size = 16
+    num_epochs = 500
     gaussian_dim = 1
-    component = 1
-    learning_rate = 1e-2
+    component = 2
+    learning_rate = 5e-2
     momentum = 0.9
     gamma = 0.0
-    schedule = 500
+    schedule = 5
     decay_rate = 0.05
     torch.cuda.device(1)
-    use_tb = False
+    use_tb = True
     if use_tb:
-        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-lr0.1-dim2")
+        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-comp2")
     else:
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/toy2"
-    dev_path = "/home/zhaoyp/Data/pos/toy2"
-    test_path = "/home/zhaoyp/Data/pos/toy2"
+    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
@@ -502,7 +504,7 @@ def natural_data():
             optim.step()
 
             num_inst = word.size(0)
-            train_err += loss.data[0] * num_inst
+            train_err += loss.item() * num_inst
             train_total += num_inst
 
             time_ave = (time.time() - start_time) / batch
