@@ -181,20 +181,22 @@ class ChainCRF(nn.Module):
 
 
 class lveg(nn.Module):
-    def __init__(self, num_labels, gaussian_dim, word_size):
+    def __init__(self, word_size, num_labels, gaussian_dim=1, component=1):
         super(lveg, self).__init__()
 
         self.num_labels = num_labels + 1
         self.gaussian_dim = gaussian_dim
-
-        self.trans_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels))
-        self.trans_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
-        self.trans_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
-        self.trans_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
-        self.trans_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, gaussian_dim))
-        self.s_weight_em = Embedding(word_size, self.num_labels)
-        self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim)
-        self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim)
+        self.component = component
+        self.min_clip = -5.0
+        self.max_clip = 5.0
+        self.trans_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component))
+        self.trans_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
+        self.trans_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
+        self.trans_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
+        self.trans_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
+        self.s_weight_em = Embedding(word_size, self.num_labels * self.component)
+        self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim * self.component)
+        self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim * self.component)
 
         self.reset_parameter()
 
@@ -209,38 +211,41 @@ class lveg(nn.Module):
 
         batch, length = input.size()
 
-        s_mu = self.s_mu_em(input).view(batch, length, self.num_labels, self.gaussian_dim)
-        # s_weight = self.s_weight_em(input).view(batch, length, self.num_labels)
-        s_weight = Variable(torch.zeros(batch, length, self.num_labels)).cuda()
-        s_var = self.s_var_em(input).view(batch, length, self.num_labels, self.gaussian_dim)
+        s_mu = self.s_mu_em(input).view(batch, length, self.num_labels, self.component, self.gaussian_dim)
+        s_weight = self.s_weight_em(input).view(batch, length, self.num_labels, self.component)
+        # s_weight = Variable(torch.zeros(batch, length, self.num_labels)).cuda()
+        s_var = self.s_var_em(input).view(batch, length, self.num_labels, self.component, self.gaussian_dim)
 
-        # t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels).expand(batch, length, self.num_labels, self.num_labels)
-        t_weight = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels)).cuda()
-        t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
-                                                                                                        self.num_labels,
-                                                                                                        self.num_labels,
-                                                                                                        self.gaussian_dim)
-        t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
-                                                                                                          self.num_labels,
-                                                                                                          self.num_labels,
-                                                                                                          self.gaussian_dim)
-        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
-                                                                                                        self.num_labels,
-                                                                                                        self.num_labels,
-                                                                                                        self.gaussian_dim)
-        t_c_var = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim).expand(batch, length,
-                                                                                                         self.num_labels,
-                                                                                                         self.num_labels,
-                                                                                                         self.gaussian_dim)
+        t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels, self.component)
+        t_weight = t_weight.expand(batch, length, self.num_labels, self.num_labels, self.component)
+        # t_weight = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels)).cuda()
+        t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_p_mu = t_p_mu.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_c_mu = t_c_mu.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_c_var = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
 
-        s_mu = F.tanh(s_mu)
-        s_var = F.tanh(s_var)
-        t_p_mu = F.tanh(t_p_mu)
-        t_p_var = F.tanh(t_p_var)
-        t_c_mu = F.tanh(t_c_mu)
-        t_c_var = F.tanh(t_c_var)
+        # s_mu = F.tanh(s_mu)
+        # s_var = F.tanh(s_var)
+        # t_p_mu = F.tanh(t_p_mu)
+        # t_p_var = F.tanh(t_p_var)
+        # t_c_mu = F.tanh(t_c_mu)
+        # t_c_var = F.tanh(t_c_var)
+
+        s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
+        s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
+        t_p_mu = torch.clamp(t_p_mu, min=self.min_clip, max=self.max_clip)
+        t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
+        t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
+        t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
 
         def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
+            # input  shape1 [batch, length, num_labels, component 0, ... , component k-1, 1, gaussian_dim]
+            # input  shape2 [batch, length, num_labels, 1, ..., 1, , component k, gaussian_dim]
+            # output shape  [batch, length, num_labels, component 0, ... , component k-1, component k, gaussian_dim]
             n1_var_square = torch.exp(2.0 * n1_var)
             n2_var_square = torch.exp(2.0 * n2_var)
             var_square_add = n1_var_square + n2_var_square
@@ -253,21 +258,26 @@ class lveg(nn.Module):
             var = n1_var + n2_var - 0.5 * var_log_square_add
             scale = torch.sum(scale, dim=-1)
             return scale, mu, var
+        # shape [batch, length, num_labels, num_labels, component, component, gaussian_dim]
+        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu.unsqueeze(2).unsqueeze(4), s_var.unsqueeze(2).unsqueeze(4),
+                                                 t_c_mu.unsqueeze(5), t_c_var.unsqueeze(5))
 
-        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu.unsqueeze(2), s_var.unsqueeze(2), t_c_mu, t_c_var)
+        cs_scale = cs_scale + s_weight.unsqueeze(2).unsqueeze(4)
 
-        cs_scale = cs_scale + s_weight.unsqueeze(2)
+        # shape [batch, length-1, num_labels, num_labels, num_labels, component, component, component, gaussian_dim]
+        csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
+                                         cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
+                                         t_p_mu[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6),
+                                         t_p_var[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6))
 
-        csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1, :, :, :].unsqueeze(4), cs_var[:, :-1, :, :, :].unsqueeze(4),
-                                         t_p_mu[:, 1:, :, :, :].unsqueeze(2), t_p_var[:, 1:, :, :, :].unsqueeze(2))
-
-        csp_scale = csp_scale + cs_scale[:, :-1, :, :].unsqueeze(4) + t_weight[:, 1:, :, :].unsqueeze(2)
-
-        output = torch.cat((csp_scale, cs_scale[:, -1, :, :].unsqueeze(1).unsqueeze(4).expand(batch, 1, self.num_labels,
-                                                                                              self.num_labels,
-                                                                                              self.num_labels)), dim=1)
+        csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6)
+        # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
+        output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
+                                                                                                     self.num_labels,self.num_labels,
+                                                                                                     self.component, self.component,
+                                                                                                     self.component)), dim=1)
         if mask is not None:
-            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4)
+            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
         return output
 
     def loss(self, sents, target, mask):
@@ -275,7 +285,7 @@ class lveg(nn.Module):
         energy = self.forward(sents, mask)
         is_cuda = True
         if mask is not None:
-            mask_transpose = mask.transpose(0, 1).unsqueeze(2).unsqueeze(3)
+            mask_transpose = mask.transpose(0, 1).unsqueeze(2).unsqueeze(3).unsqueeze(4)
         else:
             mask_transpose = None
 
@@ -289,24 +299,27 @@ class lveg(nn.Module):
             # shape = [batch]
             batch_index = torch.arange(0, batch).long().cuda()
             prev_label = torch.cuda.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch)).cuda()
+            tgt_energy = Variable(torch.zeros(batch, self.component)).cuda()
             holder = torch.zeros(batch).long().cuda()
         else:
             # shape = [batch]
             batch_index = torch.arange(0, batch).long()
             prev_label = torch.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch))
+            tgt_energy = Variable(torch.zeros(batch, self.component))
             holder = torch.zeros(batch).long()
 
         for t in range(length):
             # shape = [batch, num_label, num_label, num_label]
             curr_energy = energy_transpose[t]
             if t == 0:
-                # partition shape [batch, num_label, num_label]
-                partition = curr_energy[:, -1, :, :]
+                # partition shape [batch, num_label, num_label, component, component, component]
+                partition = curr_energy[:, -1]
+                # shape [batch, num_label, num_label, component]
+                partition = logsumexp(logsumexp(partition, dim=4), dim=3)
             else:
-                # shape = [batch, num_label, num_label]
-                partition_new = logsumexp(curr_energy + partition.unsqueeze(3), dim=1)
+                # shape = [batch, num_label, num_label, num_label ,component, component, component]
+                partition_new = logsumexp(logsumexp(logsumexp(curr_energy + partition.unsqueeze(3).unsqueeze(5).
+                                                              unsqueeze(6), dim=5), dim=4), dim=1)
                 if mask_transpose is None:
                     partition = partition_new
                 else:
@@ -315,54 +328,55 @@ class lveg(nn.Module):
                 if t == length - 1:
                     partition = partition[:, :, 2]
             if t != length - 1:
-                tgt_energy += curr_energy[
+                tmp_energy = curr_energy[
                     batch_index, prev_label, target_transpose[t], target_transpose[t + 1]]
-                prev_label = target_transpose[t]
             else:
-                tgt_energy += curr_energy[batch_index, prev_label, target_transpose[t], holder]
-                prev_label = target_transpose[t]
-        return (logsumexp(partition, dim=1) - tgt_energy).mean()
+                tmp_energy = curr_energy[
+                    batch_index, prev_label, target_transpose[t], holder]
+            tgt_energy = logsumexp(logsumexp(tmp_energy + tgt_energy.unsqueeze(2).unsqueeze(3), dim=2), dim=1)
+            prev_label = target_transpose[t]
+        loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
+        return loss.mean()
 
     def decode(self, sents, target, mask, lengths, leading_symbolic=0):
         is_cuda = True
         energy = self.forward(sents, mask).data
         energy_transpose = energy.transpose(0, 1)
         mask_transpose = mask.transpose(0, 1).data
-        length, batch_size, num_label, _, _ = energy_transpose.size()
+        length, batch_size, num_label, _, _, _, _, _ = energy_transpose.size()
 
         # Forward word and Backward
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
 
-        forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
-        backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
         holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
-
+        mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3)
+        # fixme version 2  remove leading_symbolic before expect_count
         for i in range(0, length - 1):
             if i == 0:
-                forward[i] = energy_transpose[i, :, -1, :, :]
-                backward[i] = reverse_energy_transpose[i, :, :, :, 2]
+                forward[i] = logsumexp(logsumexp(energy_transpose[i, :, -1], dim=4), dim=3)
+                backward[i] = logsumexp(logsumexp(reverse_energy_transpose[i, :, :, :, 2], dim=5), dim=4)
             else:
-                forward[i] = logsumexp(forward[i - 1].unsqueeze(3) + energy_transpose[i], dim=1)
-                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i].unsqueeze(1).unsqueeze(
-                    2)
+                forward[i] = logsumexp(logsumexp(logsumexp(forward[i - 1].unsqueeze(3).unsqueeze(5).unsqueeze(6) + energy_transpose[i], dim=5), dim=4), dim=1)
+                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i]
                 # backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3) \
                 #               * mask_transpose[i].unsqueeze(1).unsqueeze(2)
-                backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3)
-                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i].unsqueeze(
-                    1).unsqueeze(2)
+                backward[i] = logsumexp(logsumexp(logsumexp(backward[i - 1].unsqueeze(1).unsqueeze(4).unsqueeze(5) + reverse_energy_transpose[i], dim=6), dim=5), dim=3)
+                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i]
 
         # detect score calculate by forward and backward, should be equal
         # it is right to be here?
-        forward_score = logsumexp(forward[-1, :, :, 2], dim=1)
-        backword_score = logsumexp(backward[-1, :, -1, :], dim=1)
+        forward_score = logsumexp(logsumexp(forward[-1, :, :, 2], dim=-1), dim=1)
+        backword_score = logsumexp(logsumexp(backward[-1, :, -1, :], dim=-1), dim=1)
         err = forward_score - backword_score
 
         backward = reverse_padded_sequence(backward.contiguous(), mask_transpose, batch_first=False)
         forward = torch.cat((holder, forward), dim=0)
         backward = torch.cat((backward, holder), dim=0)
 
-        cnt = forward + backward
+        cnt = logsumexp(forward + backward, dim=-1)
         cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
         length, batch_size, num_label, _ = cnt_transpose.size()
@@ -402,124 +416,11 @@ class lveg(nn.Module):
             return preds, (torch.eq(preds, target.data).float() * mask.data).sum()
 
 
-softmax = nn.Softmax()
-
-
-def generate_data(emission_rules, trans_rules, begin_rule, min_len, len_delta, batch, lveg=False):
-    # generate data and padding it
-    num_labels, num_words = emission_rules.shape
-
-    label_pad = num_labels
-    word_pad = num_words
-    begin_pad = label_pad + 1
-
-    labels = []
-    words = []
-    mask = []
-
-    for i in range(batch):
-        length = sampler(softmax(Variable(torch.rand(len_delta))).data.numpy()) + min_len
-        mask.append(length)
-
-        label = []
-        word = []
-        for j in range(length):
-            if j == 0:
-                a_label = sampler(begin_rule)
-            else:
-                a_label = sampler(trans_rules[label[j - 1]])
-            a_word = sampler(emission_rules[a_label])
-            label.append(a_label)
-            word.append(a_word)
-        if lveg:
-            label.append(begin_pad)
-            # may should be begin_pad ?
-            word.append(word_pad)
-        labels.append(label)
-        words.append(word)
-    # padd data
-    if lveg:
-        max_len = max(mask) + 1
-    else:
-        max_len = max(mask)
-    for i in range(batch):
-        labels[i] = np.pad(labels[i], (0, max_len - len(labels[i])), 'constant', constant_values=(label_pad, label_pad))
-        words[i] = np.pad(words[i], (0, max_len - len(words[i])), 'constant', constant_values=(word_pad, word_pad))
-    labels = Variable(torch.from_numpy(np.array(labels)))
-    words = Variable(torch.from_numpy(np.array(words)))
-
-    mask = torch.from_numpy(np.array(mask))
-    mask = Variable(sequence_mask(mask, max_len)).type(torch.FloatTensor)
-    return labels, words, mask
-
-
-def sampler(distrubution):
-    rnd = np.random.rand()
-    for i in range(len(distrubution)):
-        rnd -= distrubution[i]
-        if rnd < 0:
-            return i
-
-
-def main():
-    num_labels = 5
-    words = 10
-
-    trans_rule = Variable(torch.rand(num_labels, num_labels))
-    trans_rule = softmax(trans_rule).data.numpy()
-    emmsion_rule = Variable(torch.rand(num_labels, words))
-    emmsion_rule = softmax(emmsion_rule).data.numpy()
-    begin_rule = Variable(torch.rand(num_labels))
-    begin_rule = softmax(begin_rule).data.numpy()
-
-    min_len = 5
-    len_delta = 5
-    batch_size = 16
-    gaussian_dim = 1
-
-    epoch = 10000
-    train_size = 10
-    test_size = 2
-    train_set = []
-    test_set = []
-
-    for i in range(train_size):
-        label_batch, words_batch, mask_batch = generate_data(emmsion_rule, trans_rule, begin_rule, min_len, len_delta,
-                                                             batch_size, lveg=True)
-        train_set.append((label_batch, words_batch, mask_batch))
-    for i in range(test_size):
-        label_batch, words_batch, mask_batch = generate_data(emmsion_rule, trans_rule, begin_rule, min_len, len_delta,
-                                                             batch_size, lveg=True)
-        test_set.append((label_batch, words_batch, mask_batch))
-    model = lveg(num_labels + 1, gaussian_dim, words + 1)
-    # lveg(num_labels + 2, gaussian_dim, words+1)\
-    # ChainCRF(words + 1, num_labels+1)
-
-    learning_rate = 1e-3
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
-    for i in range(epoch):
-        train_err = 0
-        for gold_label, sents, mask in train_set:
-            loss = model.loss(sents, gold_label, mask).mean()
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            train_err += loss.data[0] * batch_size
-        print("{} epoch loss {}".format(i, train_err))
-        # overfit test
-        corr, total = 0, 0
-        for gold_label, sents, mask in train_set:
-            preds = model.decode(sents, mask, leading_symbolic=0)
-            corr += (torch.eq(preds, gold_label.data).float() * mask.data).sum()
-            total += mask.data.sum()
-        print("      acc is {}".format(corr / total))
-
-
 def natural_data():
     batch_size = 4
     num_epochs = 200
-    gaussian_dim = 3
+    gaussian_dim = 1
+    component = 1
     learning_rate = 1e-2
     momentum = 0.9
     gamma = 0.0
@@ -533,16 +434,16 @@ def natural_data():
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/toy10"
-    dev_path = "/home/zhaoyp/Data/pos/toy10"
-    test_path = "/home/zhaoyp/Data/pos/toy10"
+    train_path = "/home/zhaoyp/Data/pos/toy2"
+    dev_path = "/home/zhaoyp/Data/pos/toy2"
+    test_path = "/home/zhaoyp/Data/pos/toy2"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy10/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
@@ -566,7 +467,7 @@ def natural_data():
                                                   use_gpu=use_gpu, volatile=True, symbolic_end=True,
                                                   normalize_digits=False)
 
-    network = lveg(pos_alphabet.size(), gaussian_dim, word_alphabet.size())
+    network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, component=component)
 
     # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
     if use_gpu:
