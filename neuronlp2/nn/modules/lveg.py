@@ -89,22 +89,22 @@ class ChainLVeG(nn.Module):
         nn.init.constant(self.state_nn_mu.bias, 0)
         nn.init.constant(self.state_nn_var.bias, 0)
         if self.bigram:
-            nn.init.xavier_normal(self.trans_nn_weight.weight)
-            nn.init.xavier_normal(self.trans_nn_p_mu.weight)
-            nn.init.xavier_normal(self.trans_nn_c_mu.weight)
-            nn.init.xavier_normal(self.trans_nn_p_var.weight)
-            nn.init.xavier_normal(self.trans_nn_c_var.weight)
-            nn.init.constant(self.trans_nn_weight.bias, 0)
-            nn.init.constant(self.trans_nn_p_mu.bias, 0)
-            nn.init.constant(self.trans_nn_c_mu.bias, 0)
-            nn.init.constant(self.trans_nn_p_var.bias, 0)
-            nn.init.constant(self.trans_nn_c_var.bias, 0)
+            nn.init.xavier_normal_(self.trans_nn_weight.weight)
+            nn.init.xavier_normal_(self.trans_nn_p_mu.weight)
+            nn.init.xavier_normal_(self.trans_nn_c_mu.weight)
+            nn.init.xavier_normal_(self.trans_nn_p_var.weight)
+            nn.init.xavier_normal_(self.trans_nn_c_var.weight)
+            nn.init.constant_(self.trans_nn_weight.bias, 0)
+            nn.init.constant_(self.trans_nn_p_mu.bias, 0)
+            nn.init.constant_(self.trans_nn_c_mu.bias, 0)
+            nn.init.constant_(self.trans_nn_p_var.bias, 0)
+            nn.init.constant_(self.trans_nn_c_var.bias, 0)
         else:
-            nn.init.normal(self.trans_mat_weight)
-            nn.init.normal(self.trans_mat_p_mu)
-            nn.init.normal(self.trans_mat_c_mu)
-            nn.init.normal(self.trans_mat_p_var)
-            nn.init.normal(self.trans_mat_c_var)
+            nn.init.normal_(self.trans_mat_weight)
+            nn.init.normal_(self.trans_mat_p_mu)
+            nn.init.normal_(self.trans_mat_c_mu)
+            nn.init.normal_(self.trans_mat_p_var)
+            nn.init.normal_(self.trans_mat_c_var)
 
     def forward(self, input, mask=None):
         """
@@ -383,12 +383,12 @@ class ChainLVeG(nn.Module):
 
         if input.is_cuda:
             batch_index = torch.arange(0, batch_size).long().cuda()
-            pi = torch.zeros([length, batch_size, num_label, 1]).cuda()
+            pi = torch.zeros([length, batch_size, num_label]).cuda()
             pointer = torch.cuda.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.cuda.LongTensor(length, batch_size).zero_()
         else:
             batch_index = torch.arange(0, batch_size).long()
-            pi = torch.zeros([length, batch_size, num_label, 1])
+            pi = torch.zeros([length, batch_size, num_label])
             pointer = torch.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
@@ -396,7 +396,7 @@ class ChainLVeG(nn.Module):
         pi[0] = cnt[0, :, -1, :-1]
         pointer[0] = -1
         for t in range(1, length):
-            pi_prev = pi[t - 1]
+            pi_prev = pi[t - 1].unsqueeze(2)
             pi[t], pointer[t] = torch.max(cnt_transpose[t] + pi_prev, dim=1)
 
         _, back_pointer[-1] = torch.max(pi[-1], dim=1)

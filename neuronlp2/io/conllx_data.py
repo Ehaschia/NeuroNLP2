@@ -369,14 +369,23 @@ def read_data_to_variable(source_path, word_alphabet, char_alphabet, pos_alphabe
                 if word_alphabet.is_singleton(wid):
                     single[i, j] = 1
 
-        words = Variable(torch.from_numpy(wid_inputs), volatile=volatile)
-        chars = Variable(torch.from_numpy(cid_inputs), volatile=volatile)
-        pos = Variable(torch.from_numpy(pid_inputs), volatile=volatile)
-        heads = Variable(torch.from_numpy(hid_inputs), volatile=volatile)
-        types = Variable(torch.from_numpy(tid_inputs), volatile=volatile)
-        masks = Variable(torch.from_numpy(masks), volatile=volatile)
-        single = Variable(torch.from_numpy(single), volatile=volatile)
-        lengths = torch.from_numpy(lengths)
+        # words = Variable(torch.from_numpy(wid_inputs), volatile=volatile)
+        # chars = Variable(torch.from_numpy(cid_inputs), volatile=volatile)
+        # pos = Variable(torch.from_numpy(pid_inputs), volatile=volatile)
+        # heads = Variable(torch.from_numpy(hid_inputs), volatile=volatile)
+        # types = Variable(torch.from_numpy(tid_inputs), volatile=volatile)
+        # masks = Variable(torch.from_numpy(masks), volatile=volatile)
+        # single = Variable(torch.from_numpy(single), volatile=volatile)
+        # lengths = torch.from_numpy(lengths)
+
+        words = torch.tensor(wid_inputs, requires_grad=volatile)
+        chars = torch.tensor(cid_inputs, requires_grad=volatile)
+        pos = torch.tensor(pid_inputs, requires_grad=volatile)
+        heads = torch.tensor(hid_inputs, requires_grad=volatile)
+        types = torch.tensor(tid_inputs, requires_grad=volatile)
+        masks = torch.tensor(masks, requires_grad=volatile)
+        single = torch.tensor(single, requires_grad=volatile)
+        lengths = torch.tensor(lengths)
         if use_gpu:
             words = words.cuda()
             chars = chars.cuda()
@@ -437,7 +446,9 @@ def iterate_batch_variable(data, batch_size, unk_replace=0., shuffle=False):
 
         words, chars, pos, heads, types, masks, single, lengths = data_variable[bucket_id]
         if unk_replace:
+            # ones = Variable(single.data.new(bucket_size, bucket_length).fill_(1))
             ones = Variable(single.data.new(bucket_size, bucket_length).fill_(1))
+            # noise = Variable(masks.data.new(bucket_size, bucket_length).bernoulli_(unk_replace).long())
             noise = Variable(masks.data.new(bucket_size, bucket_length).bernoulli_(unk_replace).long())
             words = words * (ones - single * noise)
 

@@ -7,6 +7,7 @@ from torch.autograd import Variable
 from torch.nn.parameter import Parameter
 
 from ..init import assign_tensor
+import torch.nn.functional as F
 
 
 class Embedding(nn.Module):
@@ -81,10 +82,14 @@ class Embedding(nn.Module):
             input = input.view(num_inputs, input_size[-1])
 
         output_size = input_size + (self.embedding_dim,)
-        return self._backend.Embedding.apply(
-            input, self.weight,
-            padding_idx, self.max_norm, self.norm_type,
-            self.scale_grad_by_freq, self.sparse).view(output_size)
+        # return self._backend.Embedding.apply(
+        #     input, self.weight,
+        #     padding_idx, self.max_norm, self.norm_type,
+        #     self.scale_grad_by_freq, self.sparse).view(output_size)
+        # fixme for putorch0.4
+        return F.embedding(input, self.weight,
+                           padding_idx, self.max_norm, self.norm_type,
+                           self.scale_grad_by_freq, self.sparse).view(output_size)
 
     def __repr__(self):
         s = '{name}({num_embeddings}, {embedding_dim}'

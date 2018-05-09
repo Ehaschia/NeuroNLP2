@@ -49,6 +49,25 @@ def store_label(epoch, pred, gold):
             f.write('\n'.join(gold))
             f.write('\n')
 
+def calculate_gap(preds, mask, length, begin_labeling):
+    if mask.is_cuda:
+        mask = mask.cpu().data
+    else:
+        mask = mask.data()
+    if length.is_cuda:
+        length = length.cpu().data
+    else:
+        length = length.data
+    if preds.is_cuda:
+        preds = preds.cpu().data
+    else:
+        preds = preds.data
+    preds = torch.lt(preds, float(begin_labeling)).type(torch.FloatTensor)
+    if length is not None:
+        max_len = length.max()
+        mask = mask[:, :max_len]
+    preds = preds * mask
+    return torch.sum(preds).item()
 
 def detect_err(loss, pre_loss):
     if (loss - pre_loss) > 5:
@@ -239,7 +258,9 @@ def main():
             optim.step()
 
             num_inst = word.size(0)
-            train_err += loss.data[0] * num_inst
+            # fixme for torch0.4
+            # train_err += loss.data[0] * num_tokens
+            train_err += loss.item() * num_inst
             train_total += num_inst
 
             time_ave = (time.time() - start_time) / batch
@@ -262,11 +283,13 @@ def main():
         print('train: %d loss: %.4f, time: %.2fs' % (num_batches, train_err / train_total, time.time() - start_time))
         if use_tb:
             writer.add_scalar("loss/train", train_err / train_total, epoch)
+        # debug
         pre_loss = detect_err(train_err / train_total, pre_loss)
         network.eval()
         # evaluate performace on train data
         train_corr = 0.0
         train_total = 0.0
+        gap = 0.0
         for batch in conllx_data.iterate_batch_variable(data_train, batch_size):
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
@@ -274,9 +297,12 @@ def main():
             # preds, corr = network.decode(word, target=labels, mask=masks, lengths=lengths,
             #                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             num_tokens = masks.data.sum()
+            gap += calculate_gap(preds, masks, lengths, conllx_data.NUM_SYMBOLIC_TAGS)
             train_corr += corr
             train_total += num_tokens
-        print('train corr: %d, total: %d, acc: %.2f%%' % (train_corr, train_total, train_corr / train_total * 100))
+        print('train corr: %d, total: %d, acc: %.2f%%, gap_err: %.2f%%' % (train_corr, train_total,
+                                                                           train_corr / train_total * 100,
+                                                                           gap / train_total * 100))
         if use_tb:
             writer.add_scalar("acc/train", train_corr / train_total * 100, epoch)
 
@@ -291,7 +317,8 @@ def main():
             # loss = network.loss(word, labels, mask=masks)
 
             num_inst = word.size(0)
-            dev_err += loss.data[0] * num_inst
+            # dev_err += loss.data[0] * num_inst
+            dev_err += loss.item() * num_inst
             dev_total += num_inst
         print('dev loss: %.4f, time: %.2fs' % (dev_err / dev_total, time.time() - start_time))
         if use_tb:
@@ -300,6 +327,7 @@ def main():
         # evaluate performance on dev data
         dev_corr = 0.0
         dev_total = 0
+        gap = 0.0
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
@@ -310,9 +338,11 @@ def main():
             #     store_label(epoch, preds, labels.data)
             #     exit(0)
             num_tokens = masks.data.sum()
+            gap += calculate_gap(preds, masks, lengths, conllx_data.NUM_SYMBOLIC_TAGS)
             dev_corr += corr
             dev_total += num_tokens
-        print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
+        print('dev corr: %d, total: %d, acc: %.2f%%, gap_err: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total,
+                                                                         gap * 100 / dev_total))
         if use_tb:
             writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
 

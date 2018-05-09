@@ -90,7 +90,12 @@ def recover_rnn_seq(seq, rev_order, hx=None, batch_first=False):
 
 
 def check_numerics(input):
-    check_res = np.isfinite(input.data.cpu().numpy())
+    if input is None:
+        return
+    if input.is_cuda:
+        check_res = np.isfinite(input.data.cpu().numpy())
+    else:
+        check_res = np.isfinite(input.data.numpy())
     check_res = np.subtract(check_res, 1.0)
     if np.sum(check_res) != 0.0:
         print("Numerics Error!")
