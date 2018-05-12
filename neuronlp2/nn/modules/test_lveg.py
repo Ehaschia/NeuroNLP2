@@ -228,16 +228,16 @@ class lveg(nn.Module):
         s_var = self.s_var_em(input).view(batch, length, self.num_labels, self.component, self.gaussian_dim)
 
         t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels, self.component)
-        t_weight = t_weight.expand(batch, length, self.num_labels, self.num_labels, self.component)
+
         # t_weight = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels)).cuda()
         t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
-        t_p_mu = t_p_mu.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+
         t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
-        t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+
         t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
-        t_c_mu = t_c_mu.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+
         t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
-        t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+
 
         # s_mu = F.tanh(s_mu)
         # s_var = F.tanh(s_var)
@@ -246,12 +246,12 @@ class lveg(nn.Module):
         # t_c_mu = F.tanh(t_c_mu)
         # t_c_var = F.tanh(t_c_var)
 
-        # s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
-        # s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
-        # t_p_mu = torch.clamp(t_p_mu, min=self.min_clip, max=self.max_clip)
-        # t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
-        # t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
-        # t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
+        s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
+        s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
+        t_p_mu = torch.clamp(t_p_mu, min=self.min_clip, max=self.max_clip)
+        t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
+        t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
+        t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
         check_numerics(s_weight)
         check_numerics(s_mu)
         check_numerics(s_var)
@@ -293,17 +293,19 @@ class lveg(nn.Module):
         # shape [batch, length-1, num_labels, num_labels, num_labels, component, component, component, gaussian_dim]
         csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
-                                         t_p_mu[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6),
-                                         t_p_var[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6))
+                                         t_p_mu.unsqueeze(2).unsqueeze(5).unsqueeze(6),
+                                         t_p_var.unsqueeze(2).unsqueeze(5).unsqueeze(6))
 
-        csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight[:, 1:].unsqueeze(2).unsqueeze(5).unsqueeze(6)
+        csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight.unsqueeze(2).unsqueeze(5).unsqueeze(6)
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
         check_numerics(csp_scale)
+        # fixme is this expand ok? now is ok
         output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
                                                                                                      self.num_labels,self.num_labels,
                                                                                                      self.component, self.component,
                                                                                                      self.component)), dim=1)
         if mask is not None:
+            # maybe here is error
             output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
         return output
 
@@ -377,7 +379,6 @@ class lveg(nn.Module):
         is_cuda = True
         energy = self.forward(sents, mask).data
         energy_transpose = energy.transpose(0, 1)
-        # fixme convert mask to Tensor
         mask = mask.data
         mask_transpose = mask.transpose(0, 1)
         length, batch_size, num_label, _, _, _, _, _ = energy_transpose.size()
@@ -455,7 +456,7 @@ class lveg(nn.Module):
 
 def natural_data():
     batch_size = 16
-    num_epochs = 50
+    num_epochs = 500
     gaussian_dim = 1
     component = 1
     learning_rate = 1e-1
@@ -464,23 +465,23 @@ def natural_data():
     schedule = 5
     decay_rate = 0.05
     device = torch.device("cuda")
-    use_tb = False
+    use_tb = True
     if use_tb:
-        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-lr0.01")
+        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/torch0.4-raw-lveg-lr0.1")
     else:
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/toy2"
-    dev_path = "/home/zhaoyp/Data/pos/toy2"
-    test_path = "/home/zhaoyp/Data/pos/toy2"
+    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/en-ud-train.conllu_clean_cnn/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
@@ -534,6 +535,8 @@ def natural_data():
             optim.zero_grad()
             loss = network.loss(word, labels, mask=masks).mean()
             loss.backward()
+            # store_input(word, labels, masks, batch, epoch)
+            # store_data(network, loss, batch, epoch)
             optim.step()
 
             num_inst = word.size(0)
@@ -647,14 +650,75 @@ def store_param(network, epoch, pos, word):
         t_c_var = np.array2string(network.trans_c_var.data.squeeze(2).cpu().numpy(), precision=2, separator=',',
                                   suppress_small=True)
         f.write(t_c_var)
-def store_input(word, lalbel, mask, batch):
-    with open("toy2_b" + str(batch)) as f:
-        f.write("word:")
-        f.write(np.array2string(word.data.cpu().numpy(), precision=2, separator=',', suppress_small=True))
 
+
+def store(file, name, tensor):
+    file.write(name)
+    file.write(np.array2string(tensor.numpy(), precision=2, separator=',', suppress_small=True))
+    file.write("\n\n")
+
+
+def store_input(word, label, mask, batch, epoch):
+    with open("toy2_input_new_v2_e" + str(epoch) + "_b" + str(batch), 'w') as f:
+        store(f, "word:\n", word.data.cpu())
+
+        store(f, "label:\n", label.data.cpu())
+
+        store(f, "mask:\n", mask.data.cpu())
+
+
+def store_data(network, loss, batch, epoch):
+    with open("toy2_param_new_v2_e" + str(epoch) + "_b" + str(batch), 'w') as f:
+        store(f, "loss:\n", loss.squeeze().data.cpu())
+
+        store(f, "trans_weight:\n", network.trans_weight.squeeze().data.cpu())
+
+        store(f, "trans_p_mu:\n", network.trans_p_mu.squeeze().data.cpu())
+
+        store(f, "trans_p_var:\n", network.trans_p_var.squeeze().data.cpu())
+
+        store(f, "trans_c_mu:\n", network.trans_c_mu.squeeze().data.cpu())
+
+        store(f, "trans_c_var:\n", network.trans_c_var.squeeze().data.cpu())
+
+        store(f, "s_weight_em:\n", network.s_weight_em.weight.squeeze().data.cpu())
+
+        store(f, "s_mu_em:\n", network.s_mu_em.weight.squeeze().data.cpu())
+
+        store(f, "s_var_em:\n", network.s_var_em.weight.squeeze().data.cpu())
+
+    with open("toy2_grad_new_v2_e" + str(epoch) + "_b" + str(batch), 'w') as f:
+        if network.trans_weight.grad is not None:
+            store(f, "trans_weight:\n", network.trans_weight.grad.squeeze().data.cpu())
+        if network.trans_p_mu.grad is not None:
+            store(f, "trans_p_mu:\n", network.trans_p_mu.grad.squeeze().data.cpu())
+        if network.trans_p_var.grad is not None:
+            store(f, "trans_p_var:\n", network.trans_p_var.grad.squeeze().data.cpu())
+        if network.trans_c_mu.grad is not None:
+            store(f, "trans_c_mu:\n", network.trans_c_mu.grad.squeeze().data.cpu())
+        if network.trans_c_var.grad is not None:
+            store(f, "trans_c_var:\n", network.trans_c_var.grad.squeeze().data.cpu())
+        if network.s_weight_em.weight.grad is not None:
+            store(f, "s_weight_em:\n", network.s_weight_em.weight.grad.squeeze().data.cpu())
+        if network.s_mu_em.weight.grad is not None:
+            store(f, "s_mu_em:\n", network.s_mu_em.weight.grad.squeeze().data.cpu())
+        if network.s_var_em.weight.grad is not None:
+            store(f, "s_var_em:\n", network.s_var_em.weight.grad.squeeze().data.cpu())
+
+
+def detect_inter(cs_mu, cs_var, t_p_mu, t_p_var):
+    with open("inter_param_v3", 'w') as f:
+        store(f, "cs_mu:\n", cs_mu.grad.squeeze().cpu().data)
+
+        store(f, "cs_var:\n", cs_var.grad.squeeze().cpu().data)
+
+        store(f, "t_p_mu:\n", t_p_mu.grad.squeeze().cpu().data)
+
+        store(f, "t_p_var:\n", t_p_var.grad.squeeze().cpu().data)
 
 if __name__ == '__main__':
     torch.random.manual_seed(480)
     np.random.seed(480)
     natural_data()
     # main()
+

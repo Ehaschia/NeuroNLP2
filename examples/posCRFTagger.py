@@ -22,7 +22,9 @@ from neuronlp2.models import BiRecurrentConvCRF, BiVarRecurrentConvCRF, BiRecurr
 from neuronlp2 import utils
 import os.path
 from tensorboardX import SummaryWriter
-from neuronlp2.nn.modules import lveg
+# from neuronlp2.nn.modules import lveg
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 
 
 def store_label(epoch, pred, gold):
@@ -376,7 +378,78 @@ def main():
     if use_tb:
         writer.close()
 
+def store(file, name, tensor):
+    file.write(name)
+    file.write(np.array2string(tensor.numpy(), precision=2, separator=',', suppress_small=True))
+    file.write("\n\n")
 
+def store_grad(network, loss, v, is_cuda):
+    if is_cuda:
+        with open("nnlveg_param_" + v, 'w') as f:
+            store(f, "loss:\n", loss.squeeze().data.cpu())
+            store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.squeeze().data.cpu())
+            store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.squeeze().data.cpu())
+            store(f, "trans_mat_p_var:\n", network.lveg.trans_mat_p_var.squeeze().data.cpu())
+            store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.squeeze().data.cpu())
+            store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.squeeze().data.cpu())
+            store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.weight.squeeze().data.cpu())
+            store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.weight.squeeze().data.cpu())
+            store(f, "state_nn_var:\n", network.lveg.state_nn_var.weight.squeeze().data.cpu())
+        with open("nnlveg_grad_" + v, 'w') as f:
+            if network.lveg.trans_mat_weight.grad is not None:
+                store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.grad.squeeze().data.cpu())
+            if network.lveg.trans_mat_p_mu.grad is not None:
+                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.grad.squeeze().data.cpu())
+            if network.lveg.trans_mat_p_var.grad is not None:
+                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_var.grad.squeeze().data.cpu())
+            if network.lveg.trans_mat_c_mu.grad is not None:
+                store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.grad.squeeze().data.cpu())
+            if network.lveg.trans_mat_c_var.grad is not None:
+                store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.grad.squeeze().data.cpu())
+            if network.lveg.state_nn_weight.weight.grad is not None:
+                store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.weight.grad.squeeze().data.cpu())
+            if network.lveg.state_nn_mu.weight.grad is not None:
+                store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.weight.grad.squeeze().data.cpu())
+            if network.lveg.state_nn_var.weight.grad is not None:
+                store(f, "state_nn_var:\n", network.lveg.state_nn_var.weight.grad.squeeze().data.cpu())
+    else:
+
+        with open("nnlveg_param_" + v, 'w') as f:
+            store(f, "loss:\n", loss.squeeze().data)
+
+            store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.squeeze().data)
+
+            store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.squeeze().data)
+
+            store(f, "trans_mat_p_var:\n", network.lveg.trans_mat_p_var.squeeze().data)
+
+            store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.squeeze().data)
+
+            store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.squeeze().data)
+
+            store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.squeeze().data)
+
+            store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.squeeze().data)
+
+            store(f, "state_nn_var:\n", network.lveg.s_var_em.squeeze().data)
+
+        with open("nnlveg_grad_" + v, 'w') as f:
+            if network.lveg.trans_weight.grad is not None:
+                store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.grad.squeeze().data)
+            if network.lveg.trans_p_mu.grad is not None:
+                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.grad.squeeze().data)
+            if network.lveg.trans_p_var.grad is not None:
+                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_var.grad.squeeze().data)
+            if network.lveg.trans_c_mu.grad is not None:
+                store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.grad.squeeze().data)
+            if network.lveg.trans_c_var.grad is not None:
+                store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.grad.squeeze().data)
+            if network.lveg.s_weight_em.weight.grad is not None:
+                store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.grad.squeeze().data)
+            if network.lveg.s_mu_em.weight.grad is not None:
+                store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.grad.squeeze().data)
+            if network.lveg.s_var_em.weight.grad is not None:
+                store(f, "state_nn_var:\n", network.lveg.state_nn_var.grad.squeeze().data)
 if __name__ == '__main__':
     torch.random.manual_seed(480)
     np.random.seed(480)

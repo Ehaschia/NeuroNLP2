@@ -85,9 +85,9 @@ class ChainLVeG(nn.Module):
         self.reset_parameter()
 
     def reset_parameter(self):
-        nn.init.constant(self.state_nn_weight.bias, 0)
-        nn.init.constant(self.state_nn_mu.bias, 0)
-        nn.init.constant(self.state_nn_var.bias, 0)
+        nn.init.constant_(self.state_nn_weight.bias, 0)
+        nn.init.constant_(self.state_nn_mu.bias, 0)
+        nn.init.constant_(self.state_nn_var.bias, 0)
         if self.bigram:
             nn.init.xavier_normal_(self.trans_nn_weight.weight)
             nn.init.xavier_normal_(self.trans_nn_p_mu.weight)
@@ -135,51 +135,44 @@ class ChainLVeG(nn.Module):
         # if the s_var is spherical it should be [batch, length, 1, 1]
 
         # s_weight shape [batch, length, num_label]
-        s_weight = self.state_nn_weight(input)
+        s_weight = self.state_nn_weight(input).view(batch, length, 1, self.num_labels)
 
-        s_mu = self.state_nn_mu(input).view(batch, length, self.num_labels, self.gaussian_dim)
+        s_mu = self.state_nn_mu(input).view(batch, length, 1, self.num_labels, self.gaussian_dim)
         # s_mu = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
 
         if self.spherical:
             s_var = self.state_nn_var(input).view(batch, length, 1, 1, 1)
-            s_var = s_var.expand(batch, length, self.num_labels, self.gaussian_dim)
+            # s_var = s_var.expand(batch, length, self.num_labels, self.gaussian_dim)
         else:
-            s_var = self.state_nn_var(input).view(batch, length, self.num_labels, self.gaussian_dim)
+            s_var = self.state_nn_var(input).view(batch, length, 1, self.num_labels, self.gaussian_dim)
         # s_var = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
         # t_weight size [batch, length, num_label, num_label]
         # mu and var size [batch, length, num_label, num_label, gaussian_dim]
         # var spherical [batch, length, 1, 1, 1]
         if self.bigram:
-            t_weight = self.trans_nn_weight(input).view(batch, length, self.num_labels, self.num_labels)
+            t_weight = self.trans_nn_weight(input).view(batch, length, 1, self.num_labels, self.num_labels)
             t_p_mu = self.trans_nn_p_mu(input).view(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
             t_c_mu = self.trans_nn_c_mu(input).view(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
             if not self.spherical:
-                t_p_var = self.trans_nn_p_var(input).view(batch, length, self.num_labels, self.num_labels,
+                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, self.num_labels, self.num_labels,
                                                           self.gaussian_dim)
                 t_c_var = self.trans_nn_c_var(input).view(batch, length, self.num_labels, self.num_labels,
                                                           self.gaussian_dim)
             else:
-                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, 1, 1)
-                t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-                t_c_var = self.trans_nn_c_var(input).view(batch, length, 1, 1, 1)
-                t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
+                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, 1, 1, 1)
+                # t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
+                t_c_var = self.trans_nn_c_var(input).view(batch, length, 1, 1, 1, 1)
+                # t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
         else:
-            t_weight = self.trans_mat_weight.unsqueeze(0).unsqueeze(1).expand(batch, length, self.num_labels,
-                                                                              self.num_labels)
-            t_p_mu = self.trans_mat_p_mu.unsqueeze(0).unsqueeze(1).expand(batch, length, self.num_labels,
-                                                                          self.num_labels, self.gaussian_dim)
-            t_c_mu = self.trans_mat_c_mu.unsqueeze(0).unsqueeze(1).expand(batch, length, self.num_labels,
-                                                                          self.num_labels, self.gaussian_dim)
+            t_weight = self.trans_mat_weight.view(1, 1, 1, self.num_labels, self.num_labels)
+            t_p_mu = self.trans_mat_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
+            t_c_mu = self.trans_mat_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
             if not self.spherical:
-                t_p_var = self.trans_mat_p_var.unsqueeze(0).unsqueeze(1).expand(batch, length, self.num_labels,
-                                                                                self.num_labels, self.gaussian_dim)
-                t_c_var = self.trans_mat_c_var.unsqueeze(0).unsqueeze(1).expand(batch, length, self.num_labels,
-                                                                                self.num_labels, self.gaussian_dim)
+                t_p_var = self.trans_mat_p_var.view(1, 1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
+                t_c_var = self.trans_mat_c_var.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
             else:
-                t_p_var = self.trans_mat_p_var.expand(batch, length, self.num_labels, self.num_labels,
-                                                      self.gaussian_dim)
-                t_c_var = self.trans_mat_c_var.expand(batch, length, self.num_labels, self.num_labels,
-                                                      self.gaussian_dim)
+                t_p_var = self.trans_mat_p_var.view(1, 1, 1, 1, 1, 1)
+                t_c_var = self.trans_mat_c_var.view(1, 1, 1, 1, 1)
 
         # t_p_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
         # t_p_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
@@ -230,15 +223,20 @@ class ChainLVeG(nn.Module):
             scale = torch.sum(scale, dim=-1)
             return scale, mu, var
 
-        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu.unsqueeze(2), s_var.unsqueeze(2), t_c_mu, t_c_var)
+        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu, s_var, t_c_mu, t_c_var)
 
-        cs_scale = cs_scale + s_weight.unsqueeze(2)
+        cs_scale = cs_scale + s_weight
+        if self.bigram:
+            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4), cs_var[:, :-1].unsqueeze(4),
+                                             t_p_mu[:, 1:], t_p_var[:, 1:])
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4) + t_weight[:, 1:]
+        else:
+            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4), cs_var[:, :-1].unsqueeze(4),
+                                             t_p_mu, t_p_var)
 
-        csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1, :, :, :].unsqueeze(4), cs_var[:, :-1, :, :, :].unsqueeze(4),
-                                         t_p_mu[:, 1:, :, :, :].unsqueeze(2), t_p_var[:, 1:, :, :, :].unsqueeze(2))
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4) + t_weight
 
-        csp_scale = csp_scale + cs_scale[:, :-1, :, :].unsqueeze(4) + t_weight[:, 1:, :, :].unsqueeze(2)
-
+        # fixme is this expand ok?
         output = torch.cat((csp_scale, cs_scale[:, -1, :, :].unsqueeze(1).unsqueeze(4).expand(batch, 1, self.num_labels,
                                                                                               self.num_labels,
                                                                                               self.num_labels)), dim=1)
