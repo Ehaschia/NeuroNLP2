@@ -13,7 +13,7 @@ from tensorboardX import SummaryWriter
 import torch.nn.functional as F
 from neuronlp2.nn.utils import check_numerics
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 
 
 class ChainCRF(nn.Module):
@@ -222,21 +222,21 @@ class lveg(nn.Module):
 
         batch, length = input.size()
 
-        s_mu = self.s_mu_em(input).view(batch, length, self.num_labels, self.component, self.gaussian_dim)
-        s_weight = self.s_weight_em(input).view(batch, length, self.num_labels, self.component)
-        # s_weight = Variable(torch.zeros(batch, length, self.num_labels)).cuda()
-        s_var = self.s_var_em(input).view(batch, length, self.num_labels, self.component, self.gaussian_dim)
+        s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, 1, self.component, self.gaussian_dim)
 
-        t_weight = self.trans_weight.view(1, 1, self.num_labels, self.num_labels, self.component)
+        s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1, self.component)
 
-        # t_weight = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels)).cuda()
-        t_p_mu = self.trans_p_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        s_var = self.s_var_em(input).view(batch, length, 1, self.num_labels, 1, self.component, self.gaussian_dim)
 
-        t_p_var = self.trans_p_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_weight = self.trans_weight.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component)
 
-        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_p_mu = self.trans_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component, self.gaussian_dim)
 
-        t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.component, self.gaussian_dim)
+        t_p_var = self.trans_p_var.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component, self.gaussian_dim)
+
+        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, 1, self.gaussian_dim)
+
+        t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.component, 1, self.gaussian_dim)
 
 
         # s_mu = F.tanh(s_mu)
@@ -252,14 +252,14 @@ class lveg(nn.Module):
         t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
         t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
         t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
-        check_numerics(s_weight)
-        check_numerics(s_mu)
-        check_numerics(s_var)
-        check_numerics(t_weight)
-        check_numerics(t_p_mu)
-        check_numerics(t_p_var)
-        check_numerics(t_c_mu)
-        check_numerics(t_c_var)
+        # check_numerics(s_weight)
+        # check_numerics(s_mu)
+        # check_numerics(s_var)
+        # check_numerics(t_weight)
+        # check_numerics(t_p_mu)
+        # check_numerics(t_p_var)
+        # check_numerics(t_c_mu)
+        # check_numerics(t_c_var)
 
         def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
             # input  shape1 [batch, length, num_labels, component 0, ... , component k-1, 1, gaussian_dim]
@@ -276,27 +276,25 @@ class lveg(nn.Module):
 
             var = n1_var + n2_var - 0.5 * var_log_square_add
             scale = torch.sum(scale, dim=-1)
-            check_numerics(n1_var_square)
-            check_numerics(n2_var_square)
-            check_numerics(var_square_add)
-            check_numerics(var_log_square_add)
-            check_numerics(scale)
-            check_numerics(mu)
-            check_numerics(var)
+            # check_numerics(n1_var_square)
+            # check_numerics(n2_var_square)
+            # check_numerics(var_square_add)
+            # check_numerics(var_log_square_add)
+            # check_numerics(scale)
+            # check_numerics(mu)
+            # check_numerics(var)
             return scale, mu, var
         # shape [batch, length, num_labels, num_labels, component, component, gaussian_dim]
-        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu.unsqueeze(2).unsqueeze(4), s_var.unsqueeze(2).unsqueeze(4),
-                                                 t_c_mu.unsqueeze(5), t_c_var.unsqueeze(5))
+        cs_scale, cs_mu, cs_var = gaussian_multi(s_mu, s_var, t_c_mu, t_c_var)
 
-        cs_scale = cs_scale + s_weight.unsqueeze(2).unsqueeze(4)
+        cs_scale = cs_scale + s_weight
         check_numerics(cs_scale)
         # shape [batch, length-1, num_labels, num_labels, num_labels, component, component, component, gaussian_dim]
         csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
-                                         t_p_mu.unsqueeze(2).unsqueeze(5).unsqueeze(6),
-                                         t_p_var.unsqueeze(2).unsqueeze(5).unsqueeze(6))
+                                         t_p_mu, t_p_var)
 
-        csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight.unsqueeze(2).unsqueeze(5).unsqueeze(6)
+        csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
         check_numerics(csp_scale)
         # fixme is this expand ok? now is ok
@@ -305,7 +303,6 @@ class lveg(nn.Module):
                                                                                                      self.component, self.component,
                                                                                                      self.component)), dim=1)
         if mask is not None:
-            # maybe here is error
             output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
         return output
 
@@ -458,14 +455,14 @@ def natural_data():
     batch_size = 16
     num_epochs = 500
     gaussian_dim = 1
-    component = 1
+    component = 2
     learning_rate = 1e-1
     momentum = 0.9
     gamma = 0.0
     schedule = 5
     decay_rate = 0.05
     device = torch.device("cuda")
-    use_tb = True
+    use_tb = False
     if use_tb:
         writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/torch0.4-raw-lveg-lr0.1")
     else:
