@@ -153,7 +153,7 @@ class ChainCRF(nn.Module):
         # the last row and column is the tag for pad symbol. reduce these two dimensions by 1 to remove that.
         # also remove the first #symbolic rows and columns.
         # now the shape of energies_shuffled is [n_time_steps, b_batch, t, t] where t = num_labels - #symbolic - 1.
-        energy_transpose = energy_transpose[:, :, leading_symbolic:-1, leading_symbolic:-1]
+        energy_transpose = energy_transpose[:, :, :-1, :-1]
 
         length, batch_size, num_label, _ = energy_transpose.size()
 
@@ -168,7 +168,7 @@ class ChainCRF(nn.Module):
             pointer = torch.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
-        pi[0] = energy[:, 0, -1, leading_symbolic:-1]
+        pi[0] = energy[:, 0, -1, :-1]
         pointer[0] = -1
         for t in range(1, length):
             pi_prev = pi[t - 1].unsqueeze(2)
@@ -178,7 +178,7 @@ class ChainCRF(nn.Module):
         for t in reversed(range(length - 1)):
             pointer_last = pointer[t + 1]
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
-        preds = back_pointer.transpose(0, 1) + leading_symbolic
+        preds = back_pointer.transpose(0, 1)
         if target is None:
             return preds, None
         # if lengths is not None:
@@ -469,18 +469,19 @@ def natural_data():
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
-    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
+    train_path = "/home/zhaoyp/Data/pos/toy2"
+    dev_path = "/home/zhaoyp/Data/pos/toy2"
+    test_path = "/home/zhaoyp/Data/pos/toy2"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/en-ud-train.conllu_clean_cnn/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
                                                  train_path, data_paths=[dev_path, test_path],
-                                                 max_vocabulary_size=50000, embedd_dict=None)
+                                                 max_vocabulary_size=50000, embedd_dict=None,
+                                                 normalize_digits=True)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -490,19 +491,19 @@ def natural_data():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet,
+                                                   type_alphabet, normalize_digits=True,
                                                    use_gpu=use_gpu, symbolic_end=True)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=True)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=True)
 
-    network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, component=component)
+    # network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, component=component)
 
-    # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
+    network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
     if use_gpu:
         network.to(device)
 
@@ -597,8 +598,8 @@ def natural_data():
             test_correct = test_corr
         print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
             dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
-        print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-            test_correct, test_total, test_correct * 100 / test_total, best_epoch))
+        # print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+        #     test_correct, test_total, test_correct * 100 / test_total, best_epoch))
 
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
