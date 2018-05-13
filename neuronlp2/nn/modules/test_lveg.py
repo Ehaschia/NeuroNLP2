@@ -13,7 +13,7 @@ from tensorboardX import SummaryWriter
 import torch.nn.functional as F
 from neuronlp2.nn.utils import check_numerics
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = "1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
 
 class ChainCRF(nn.Module):
@@ -192,22 +192,23 @@ class ChainCRF(nn.Module):
 
 
 class lveg(nn.Module):
-    def __init__(self, word_size, num_labels, gaussian_dim=1, component=1):
+    def __init__(self, word_size, num_labels, gaussian_dim=1, t_component=1, e_component=1):
         super(lveg, self).__init__()
 
         self.num_labels = num_labels + 1
         self.gaussian_dim = gaussian_dim
-        self.component = component
+        self.t_comp = t_component
+        self.e_comp = e_component
         self.min_clip = -5.0
         self.max_clip = 5.0
-        self.trans_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component))
-        self.trans_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
-        self.trans_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
-        self.trans_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
-        self.trans_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.component, gaussian_dim))
-        self.s_weight_em = Embedding(word_size, self.num_labels * self.component)
-        self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim * self.component)
-        self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim * self.component)
+        self.trans_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp))
+        self.trans_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, gaussian_dim))
+        self.trans_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, gaussian_dim))
+        self.trans_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, gaussian_dim))
+        self.trans_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, gaussian_dim))
+        self.s_weight_em = Embedding(word_size, self.num_labels * self.e_comp)
+        self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim * self.e_comp)
+        self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim * self.e_comp)
 
         self.reset_parameter()
 
@@ -222,21 +223,21 @@ class lveg(nn.Module):
 
         batch, length = input.size()
 
-        s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, 1, self.component, self.gaussian_dim)
+        s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
 
-        s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1, self.component)
+        s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp)
 
-        s_var = self.s_var_em(input).view(batch, length, 1, self.num_labels, 1, self.component, self.gaussian_dim)
+        s_var = self.s_var_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
 
-        t_weight = self.trans_weight.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component)
+        t_weight = self.trans_weight.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp)
 
-        t_p_mu = self.trans_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component, self.gaussian_dim)
+        t_p_mu = self.trans_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp, self.gaussian_dim)
 
-        t_p_var = self.trans_p_var.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.component, self.gaussian_dim)
+        t_p_var = self.trans_p_var.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp, self.gaussian_dim)
 
-        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.component, 1, self.gaussian_dim)
+        t_c_mu = self.trans_c_mu.view(1, 1, self.num_labels, self.num_labels, self.t_comp, 1, self.gaussian_dim)
 
-        t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.component, 1, self.gaussian_dim)
+        t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.t_comp, 1, self.gaussian_dim)
 
 
         # s_mu = F.tanh(s_mu)
@@ -299,9 +300,9 @@ class lveg(nn.Module):
         check_numerics(csp_scale)
         # fixme is this expand ok? now is ok
         output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
-                                                                                                     self.num_labels,self.num_labels,
-                                                                                                     self.component, self.component,
-                                                                                                     self.component)), dim=1)
+                                                                                                     self.num_labels, self.num_labels,
+                                                                                                     self.t_comp, self.e_comp,
+                                                                                                     self.t_comp)), dim=1)
         if mask is not None:
             output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
         return output
@@ -325,13 +326,13 @@ class lveg(nn.Module):
             # shape = [batch]
             batch_index = torch.arange(0, batch).long().cuda()
             prev_label = torch.cuda.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = torch.zeros(batch, self.component, requires_grad=True).cuda()
+            tgt_energy = torch.zeros(batch, self.t_comp, requires_grad=True).cuda()
             holder = torch.zeros(batch).long().cuda()
         else:
             # shape = [batch]
             batch_index = torch.arange(0, batch).long()
             prev_label = torch.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = torch.zeros(batch, self.component, requires_grad=True)
+            tgt_energy = torch.zeros(batch, self.t_comp, requires_grad=True)
             holder = torch.zeros(batch).long()
 
         for t in range(length):
@@ -384,9 +385,9 @@ class lveg(nn.Module):
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask, batch_first=False)
 
-        forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
-        backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.component]).cuda()
-        holder = torch.zeros([1, batch_size, num_label, num_label, self.component]).cuda()
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
+        holder = torch.zeros([1, batch_size, num_label, num_label, self.t_comp]).cuda()
         mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3).unsqueeze(4)
         # fixme version 2  remove leading_symbolic before expect_count
         for i in range(0, length - 1):
@@ -455,7 +456,7 @@ def natural_data():
     batch_size = 16
     num_epochs = 500
     gaussian_dim = 1
-    component = 2
+    component = 1
     learning_rate = 1e-1
     momentum = 0.9
     gamma = 0.0
@@ -464,7 +465,7 @@ def natural_data():
     device = torch.device("cuda")
     use_tb = False
     if use_tb:
-        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/torch0.4-raw-lveg-lr0.1")
+        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/torch0.4-raw-lveg-comp2-lr0.1")
     else:
         writer = None
 
@@ -481,7 +482,7 @@ def natural_data():
     type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None,
-                                                 normalize_digits=True)
+                                                 normalize_digits=False)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -491,19 +492,19 @@ def natural_data():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet, normalize_digits=True,
+                                                   type_alphabet, normalize_digits=False,
                                                    use_gpu=use_gpu, symbolic_end=True)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=True)
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=True)
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
 
-    # network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, component=component)
+    network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, t_component=component)
 
-    network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
+    # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
     if use_gpu:
         network.to(device)
 

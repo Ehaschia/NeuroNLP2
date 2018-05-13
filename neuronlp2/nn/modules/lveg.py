@@ -14,7 +14,7 @@ class ChainLVeG(nn.Module):
     Implement 1 component mixture gaussian
     """
     def __init__(self, input_size, num_labels, bigram=True, spherical=False,
-                 gaussian_dim=1):
+                 t_comp=1, e_comp=1, gaussian_dim=1):
         """
 
         Args:
@@ -38,23 +38,25 @@ class ChainLVeG(nn.Module):
         self.gaussian_dim = gaussian_dim
         self.min_clip = -5.0
         self.max_clip = 5.0
+        self.t_comp = t_comp
+        self.e_comp = e_comp
         # Gaussian for every emission rule
         # weight and var is log form
-        self.state_nn_weight = nn.Linear(self.input_size, self.num_labels)
+        self.state_nn_weight = nn.Linear(self.input_size, self.num_labels*self.e_comp)
         # every label  is a gaussian_dim dimension gaussian
-        self.state_nn_mu = nn.Linear(self.input_size, self.num_labels * self.gaussian_dim)
+        self.state_nn_mu = nn.Linear(self.input_size, self.num_labels*self.gaussian_dim*self.e_comp)
         if not self.spherical:
-            self.state_nn_var = nn.Linear(self.input_size, self.num_labels * self.gaussian_dim)
+            self.state_nn_var = nn.Linear(self.input_size, self.num_labels*self.gaussian_dim*self.e_comp)
         else:
             self.state_nn_var = nn.Linear(self.input_size, 1)
         # weight and var is log form
         if self.bigram:
-            self.trans_nn_weight = nn.Linear(self.input_size, self.num_labels * self.num_labels)
-            self.trans_nn_p_mu = nn.Linear(self.input_size, self.num_labels * self.num_labels * self.gaussian_dim)
-            self.trans_nn_c_mu = nn.Linear(self.input_size, self.num_labels * self.num_labels * self.gaussian_dim)
+            self.trans_nn_weight = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp)
+            self.trans_nn_p_mu = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*self.gaussian_dim)
+            self.trans_nn_c_mu = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*self.gaussian_dim)
             if not self.spherical:
-                self.trans_nn_p_var = nn.Linear(self.input_size, self.num_labels * self.num_labels * self.gaussian_dim)
-                self.trans_nn_c_var = nn.Linear(self.input_size, self.num_labels * self.num_labels * self.gaussian_dim)
+                self.trans_nn_p_var = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*self.gaussian_dim)
+                self.trans_nn_c_var = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*self.gaussian_dim)
             else:
                 self.trans_nn_p_var = nn.Linear(self.input_size, 1)
                 self.trans_nn_c_var = nn.Linear(self.input_size, 1)
@@ -72,12 +74,12 @@ class ChainLVeG(nn.Module):
             self.trans_nn_p_var = None
             self.trans_nn_c_var = None
 
-            self.trans_mat_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels))
-            self.trans_mat_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.gaussian_dim))
-            self.trans_mat_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.gaussian_dim))
+            self.trans_mat_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp))
+            self.trans_mat_p_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, self.gaussian_dim))
+            self.trans_mat_c_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, self.gaussian_dim))
             if not self.spherical:
-                self.trans_mat_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.gaussian_dim))
-                self.trans_mat_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.gaussian_dim))
+                self.trans_mat_p_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, self.gaussian_dim))
+                self.trans_mat_c_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, self.gaussian_dim))
             else:
                 self.trans_mat_p_var = Parameter(torch.Tensor(1))
                 # self.trans_mat_p_var = Parameter(torch.Tensor(1, 1)).view(1, 1, 1)
@@ -135,44 +137,46 @@ class ChainLVeG(nn.Module):
         # if the s_var is spherical it should be [batch, length, 1, 1]
 
         # s_weight shape [batch, length, num_label]
-        s_weight = self.state_nn_weight(input).view(batch, length, 1, self.num_labels)
+        s_weight = self.state_nn_weight(input).view(batch, length, 1, self.num_labels, 1, self.e_comp)
 
-        s_mu = self.state_nn_mu(input).view(batch, length, 1, self.num_labels, self.gaussian_dim)
+        s_mu = self.state_nn_mu(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
         # s_mu = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
 
         if self.spherical:
-            s_var = self.state_nn_var(input).view(batch, length, 1, 1, 1)
+            s_var = self.state_nn_var(input).view(batch, length, 1, 1, 1, 1, 1)
             # s_var = s_var.expand(batch, length, self.num_labels, self.gaussian_dim)
         else:
-            s_var = self.state_nn_var(input).view(batch, length, 1, self.num_labels, self.gaussian_dim)
+            s_var = self.state_nn_var(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
         # s_var = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
         # t_weight size [batch, length, num_label, num_label]
         # mu and var size [batch, length, num_label, num_label, gaussian_dim]
         # var spherical [batch, length, 1, 1, 1]
         if self.bigram:
-            t_weight = self.trans_nn_weight(input).view(batch, length, 1, self.num_labels, self.num_labels)
-            t_p_mu = self.trans_nn_p_mu(input).view(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-            t_c_mu = self.trans_nn_c_mu(input).view(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
+            t_weight = self.trans_nn_weight(input).view(batch, length, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp)
+            t_p_mu = self.trans_nn_p_mu(input).view(batch, length, 1, self.num_labels, self.num_labels, 1, 1,
+                                                    self.t_comp, self.gaussian_dim)
+            t_c_mu = self.trans_nn_c_mu(input).view(batch, length, self.num_labels, self.num_labels, self.t_comp,
+                                                    1, self.gaussian_dim)
             if not self.spherical:
-                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, self.num_labels, self.num_labels,
-                                                          self.gaussian_dim)
-                t_c_var = self.trans_nn_c_var(input).view(batch, length, self.num_labels, self.num_labels,
-                                                          self.gaussian_dim)
+                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, self.num_labels, self.num_labels, 1, 1,
+                                                          self.t_comp, self.gaussian_dim)
+                t_c_var = self.trans_nn_c_var(input).view(batch, length, self.num_labels, self.num_labels, self.t_comp,
+                                                          1, self.gaussian_dim)
             else:
-                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, 1, 1, 1)
+                t_p_var = self.trans_nn_p_var(input).view(batch, length, 1, 1, 1, 1, 1, 1, 1)
                 # t_p_var = t_p_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
-                t_c_var = self.trans_nn_c_var(input).view(batch, length, 1, 1, 1, 1)
+                t_c_var = self.trans_nn_c_var(input).view(batch, length, 1, 1, 1, 1, 1, 1, 1)
                 # t_c_var = t_c_var.expand(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)
         else:
-            t_weight = self.trans_mat_weight.view(1, 1, 1, self.num_labels, self.num_labels)
-            t_p_mu = self.trans_mat_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
-            t_c_mu = self.trans_mat_c_mu.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
+            t_weight = self.trans_mat_weight.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp)
+            t_p_mu = self.trans_mat_p_mu.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp, self.gaussian_dim)
+            t_c_mu = self.trans_mat_c_mu.view(1, 1, self.num_labels, self.num_labels, self.t_comp, 1, self.gaussian_dim)
             if not self.spherical:
-                t_p_var = self.trans_mat_p_var.view(1, 1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
-                t_c_var = self.trans_mat_c_var.view(1, 1, self.num_labels, self.num_labels, self.gaussian_dim)
+                t_p_var = self.trans_mat_p_var.view(1, 1, 1, self.num_labels, self.num_labels, 1, 1, self.t_comp, self.gaussian_dim)
+                t_c_var = self.trans_mat_c_var.view(1, 1, self.num_labels, self.num_labels, self.t_comp, 1, self.gaussian_dim)
             else:
-                t_p_var = self.trans_mat_p_var.view(1, 1, 1, 1, 1, 1)
-                t_c_var = self.trans_mat_c_var.view(1, 1, 1, 1, 1)
+                t_p_var = self.trans_mat_p_var.view(1, 1, 1, 1, 1, 1, 1, 1, 1)
+                t_c_var = self.trans_mat_c_var.view(1, 1, 1, 1, 1, 1, 1, 1)
 
         # t_p_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
         # t_p_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
@@ -227,21 +231,24 @@ class ChainLVeG(nn.Module):
 
         cs_scale = cs_scale + s_weight
         if self.bigram:
-            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4), cs_var[:, :-1].unsqueeze(4),
+            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
+                                             cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                              t_p_mu[:, 1:], t_p_var[:, 1:])
-            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4) + t_weight[:, 1:]
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight[:, 1:]
         else:
-            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4), cs_var[:, :-1].unsqueeze(4),
+            csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
+                                             cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                              t_p_mu, t_p_var)
 
-            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4) + t_weight
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
 
         # fixme is this expand ok?
-        output = torch.cat((csp_scale, cs_scale[:, -1, :, :].unsqueeze(1).unsqueeze(4).expand(batch, 1, self.num_labels,
-                                                                                              self.num_labels,
-                                                                                              self.num_labels)), dim=1)
+        output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
+                                                                                                     self.num_labels, self.num_labels,
+                                                                                                     self.t_comp, self.e_comp,
+                                                                                                     self.t_comp)), dim=1)
         if mask is not None:
-            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4)
+            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
         return output
 
     def loss(self, input, target, mask=None):
@@ -267,7 +274,7 @@ class ChainLVeG(nn.Module):
         # shape = [length, batch, 1]
         mask_transpose = None
         if mask is not None:
-            mask_transpose = mask.unsqueeze(2).unsqueeze(3).transpose(0, 1)
+            mask_transpose = mask.transpose(0, 1).unsqueeze(2).unsqueeze(3).unsqueeze(4)
 
         # shape = [batch, num_label]
         partition = None
@@ -276,44 +283,50 @@ class ChainLVeG(nn.Module):
             # shape = [batch]
             batch_index = torch.arange(0, batch).long().cuda()
             prev_label = torch.cuda.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch)).cuda()
+            tgt_energy = torch.zeros(batch, self.t_comp, requires_grad=True).cuda()
             holder = torch.zeros(batch).long().cuda()
         else:
             # shape = [batch]
             batch_index = torch.arange(0, batch).long()
             prev_label = torch.LongTensor(batch).fill_(self.num_labels - 1)
-            tgt_energy = Variable(torch.zeros(batch))
+            tgt_energy = torch.zeros(batch, self.t_comp, requires_grad=True)
             holder = torch.zeros(batch).long()
 
         for t in range(length):
             # shape = [batch, num_label, num_label, num_label]
             curr_energy = energy_transpose[t]
             if t == 0:
-                # partition shape [batch, num_label, num_label]
-                partition = curr_energy[:, -1, :, :]
+                # partition shape [batch, num_label, num_label, component, component, component]
+                partition = curr_energy[:, -1]
+                # shape [batch, num_label, num_label, component]
+                partition = logsumexp(logsumexp(partition, dim=4), dim=3)
             else:
-                # shape = [batch, num_label, num_label]
-                partition_new = logsumexp(curr_energy + partition.unsqueeze(3), dim=1)
+                # shape = [batch, num_label, num_label, num_label ,component, component, component]
+                partition_new = logsumexp(logsumexp(logsumexp(curr_energy + partition.unsqueeze(3).unsqueeze(5).
+                                                              unsqueeze(6), dim=5), dim=4), dim=1)
                 if mask_transpose is None:
                     partition = partition_new
                 else:
                     mask_t = mask_transpose[t]
                     partition = partition + (partition_new - partition) * mask_t
                 if t == length - 1:
-                    # fixme alert pos->end_pos
                     partition = partition[:, :, 2]
             if t != length - 1:
-                tgt_energy += curr_energy[
-                    batch_index, prev_label, target_transpose[t].data, target_transpose[t + 1].data]
-                prev_label = target_transpose[t].data
+                tmp_energy = curr_energy[
+                    batch_index, prev_label, target_transpose[t], target_transpose[t + 1]]
             else:
-                tgt_energy += curr_energy[batch_index, prev_label, target_transpose[t].data, holder]
-                prev_label = target_transpose[t].data
-        # check_numerics(partition)
-        # check_numerics(tgt_energy)
-        # if torch.min(logsumexp(partition, dim=1) - tgt_energy).data[0] < 0.0:
-        #     print("ERROR")
-        return logsumexp(partition, dim=1) - tgt_energy
+                tmp_energy = curr_energy[
+                    batch_index, prev_label, target_transpose[t], holder]
+            # tgt_energy = logsumexp(logsumexp(tmp_energy + tgt_energy.unsqueeze(2).unsqueeze(3), dim=2), dim=1)
+            tgt_energy_new = logsumexp(logsumexp(tmp_energy + tgt_energy.unsqueeze(2).unsqueeze(3), dim=2), dim=1)
+            if mask_transpose is None or t is 0:
+                tgt_energy = tgt_energy_new
+            else:
+                mask_t = mask_transpose[t]
+                tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
+            prev_label = target_transpose[t]
+        loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
+        return loss.mean()
 
     def decode(self, input, mask=None, leading_symbolic=0):
         """
@@ -336,46 +349,47 @@ class ChainLVeG(nn.Module):
         # Input should be provided as (n_batch, n_time_steps, num_labels, num_labels)
         # For convenience, we need to dimshuffle to (n_time_steps, n_batch, num_labels, num_labels)
         energy_transpose = energy.transpose(0, 1)
-        mask_transpose = mask.data.transpose(0, 1)
+        mask = mask.data
+        mask_transpose = mask.transpose(0, 1)
         # the last row and column is the tag for pad symbol. reduce these two dimensions by 1 to remove that.
         # also remove the first #symbolic rows and columns.
         # now the shape of energies_shuffled is [n_time_steps, b_batch, t, t] where t = num_labels - #symbolic - 1.
         # energy_transpose = energy_transpose[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
-        length, batch_size, num_label, _, _ = energy_transpose.size()
+        length, batch_size, num_label, _, _, _, _, _ = energy_transpose.size()
 
-        reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask_transpose, batch_first=False)
-        # Forward word and Backward
-        forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
-        backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
-        holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
+        reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask, batch_first=False)
 
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
+        holder = torch.zeros([1, batch_size, num_label, num_label, self.t_comp]).cuda()
+        mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3).unsqueeze(4)
+        # fixme version 2  remove leading_symbolic before expect_count
         for i in range(0, length - 1):
             if i == 0:
-                forward[i] = energy_transpose[i, :, -1, :, :]
-                backward[i] = reverse_energy_transpose[i, :, :, :, 2]
+                forward[i] = logsumexp(logsumexp(energy_transpose[i, :, -1], dim=4), dim=3)
+                backward[i] = logsumexp(logsumexp(reverse_energy_transpose[i, :, :, :, 2], dim=5), dim=4)
             else:
-                forward[i] = logsumexp(forward[i - 1].unsqueeze(3) + energy_transpose[i], dim=1)
-                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i].unsqueeze(1).unsqueeze(
-                    2)
+                forward[i] = logsumexp(logsumexp(logsumexp(forward[i - 1].unsqueeze(3).unsqueeze(5).unsqueeze(6) + energy_transpose[i], dim=5), dim=4), dim=1)
+                forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i]
                 # backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3) \
                 #               * mask_transpose[i].unsqueeze(1).unsqueeze(2)
-                backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3)
-                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i].unsqueeze(
-                    1).unsqueeze(2)
+                backward[i] = logsumexp(logsumexp(logsumexp(backward[i - 1].unsqueeze(1).unsqueeze(4).unsqueeze(5) + reverse_energy_transpose[i], dim=6), dim=5), dim=3)
+                backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i]
 
         # detect score calculate by forward and backward, should be equal
 
         # forward_score = logsumexp(forward[-1, :, :, 2], dim=1)
         # backword_score = logsumexp(backward[-1, :, -1, :], dim=1)
         # err = forward_score - backword_score
-        backward = reverse_padded_sequence(backward.contiguous(), mask_transpose, batch_first=False)
+        backward = reverse_padded_sequence(backward.contiguous(), mask, batch_first=False)
         forward = torch.cat((holder, forward), dim=0)
         backward = torch.cat((backward, holder), dim=0)
 
-        cnt = forward + backward
+        # cnt = forward + backward
         # cnt = cnt * mask_transpose.unsqueeze(2).unsqueeze(3)
         # cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
+        cnt = logsumexp(forward + backward, dim=-1)
         cnt_transpose = cnt[:, :, :-1, :-1]
         length, batch_size, num_label, _ = cnt_transpose.size()
 

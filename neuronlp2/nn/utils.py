@@ -117,14 +117,14 @@ def sequence_mask(sequence_length, max_length=None):
 
 def reverse_padded_sequence(inputs, lengths, batch_first=False):
     # change for debug test_lveg
-    # if lengths.is_cuda:
-    #     lengths = torch.sum(lengths, dim=1).cpu().numpy().astype(int)
-    # else:
-    #     lengths = torch.sum(lengths, dim=1).numpy().astype(int)
     if lengths.is_cuda:
-        lengths = torch.sum(lengths, dim=0).cpu().numpy().astype(int)
+        lengths = torch.sum(lengths, dim=1).cpu().numpy().astype(int)
     else:
-        lengths = torch.sum(lengths, dim=0).numpy().astype(int)
+        lengths = torch.sum(lengths, dim=1).numpy().astype(int)
+    # if lengths.is_cuda:
+    #     lengths = torch.sum(lengths, dim=0).cpu().numpy().astype(int)
+    # else:
+    #     lengths = torch.sum(lengths, dim=0).numpy().astype(int)
     if not batch_first:
         inputs = inputs.transpose(0, 1)
     if inputs.size(0) != len(lengths):

@@ -23,8 +23,6 @@ from neuronlp2 import utils
 import os.path
 from tensorboardX import SummaryWriter
 # from neuronlp2.nn.modules import lveg
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 
 
 def store_label(epoch, pred, gold):
@@ -51,25 +49,6 @@ def store_label(epoch, pred, gold):
             f.write('\n'.join(gold))
             f.write('\n')
 
-def calculate_gap(preds, mask, length, begin_labeling):
-    if mask.is_cuda:
-        mask = mask.cpu().data
-    else:
-        mask = mask.data()
-    if length.is_cuda:
-        length = length.cpu().data
-    else:
-        length = length.data
-    if preds.is_cuda:
-        preds = preds.cpu().data
-    else:
-        preds = preds.data
-    preds = torch.lt(preds, float(begin_labeling)).type(torch.FloatTensor)
-    if length is not None:
-        max_len = length.max()
-        mask = mask[:, :max_len]
-    preds = preds * mask
-    return torch.sum(preds).item()
 
 def detect_err(loss, pre_loss):
     if (loss - pre_loss) > 5:
@@ -108,6 +87,8 @@ def main():
     parser.add_argument('--language', type=str, default='wsj')
     parser.add_argument('--spherical', default=False, action='store_true')
     parser.add_argument('--gaussian-dim', type=int, default=1)
+    parser.add_argument('--t-component', type=int, default=1)
+    parser.add_argument('--e-component', type=int, default=1)
     parser.add_argument('--use-tensorboard', default=False, action='store_true')
     parser.add_argument('--log-dir', type=str, default='./tensorboard/')
 
@@ -147,7 +128,8 @@ def main():
     word_alphabet, char_alphabet, pos_alphabet, \
     type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/" + args.language + '/',
                                                  train_path, data_paths=[dev_path, test_path],
-                                                 max_vocabulary_size=50000, embedd_dict=embedd_dict)
+                                                 max_vocabulary_size=50000, embedd_dict=embedd_dict,
+                                                 normalize_digits=False)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -157,7 +139,7 @@ def main():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet,
+                                                   type_alphabet,normalize_digits=False,
                                                    use_gpu=use_gpu, symbolic_end=True)
     # data_train = conllx_data.read_data(train_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet)
     # num_data = sum([len(bucket) for bucket in data_train])
@@ -167,9 +149,9 @@ def main():
     num_labels = pos_alphabet.size()
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
 
     def construct_word_embedding_table():
         scale = np.sqrt(3.0 / embedd_dim)
@@ -239,7 +221,6 @@ def main():
     best_epoch = 0
     test_correct = 0.0
     test_total = 0
-    pre_loss = 100
     for epoch in range(1, num_epochs + 1):
         print('Epoch %d (%s(%s), learning rate=%.4f, decay rate=%.4f (schedule=%d)): ' % (
             epoch, mode, args.dropout, lr, decay_rate, schedule))
@@ -257,6 +238,8 @@ def main():
             loss = network.loss(word, char, labels, mask=masks)
             # loss = network.loss(word, labels, masks)
             loss.backward()
+            store_grad(network, loss, '6', True)
+            exit(0)
             optim.step()
 
             num_inst = word.size(0)
@@ -286,12 +269,11 @@ def main():
         if use_tb:
             writer.add_scalar("loss/train", train_err / train_total, epoch)
         # debug
-        pre_loss = detect_err(train_err / train_total, pre_loss)
+        # pre_loss = detect_err(train_err / train_total, pre_loss)
         network.eval()
         # evaluate performace on train data
         train_corr = 0.0
         train_total = 0.0
-        gap = 0.0
         for batch in conllx_data.iterate_batch_variable(data_train, batch_size):
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
@@ -299,12 +281,10 @@ def main():
             # preds, corr = network.decode(word, target=labels, mask=masks, lengths=lengths,
             #                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             num_tokens = masks.data.sum()
-            gap += calculate_gap(preds, masks, lengths, conllx_data.NUM_SYMBOLIC_TAGS)
             train_corr += corr
             train_total += num_tokens
-        print('train corr: %d, total: %d, acc: %.2f%%, gap_err: %.2f%%' % (train_corr, train_total,
-                                                                           train_corr / train_total * 100,
-                                                                           gap / train_total * 100))
+        print('train corr: %d, total: %d, acc: %.2f%%' % (train_corr, train_total,
+                                                          train_corr / train_total * 100))
         if use_tb:
             writer.add_scalar("acc/train", train_corr / train_total * 100, epoch)
 
@@ -329,7 +309,6 @@ def main():
         # evaluate performance on dev data
         dev_corr = 0.0
         dev_total = 0
-        gap = 0.0
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
             word, char, labels, _, _, masks, lengths = batch
             preds, corr = network.decode(word, char, target=labels, mask=masks,
@@ -340,11 +319,9 @@ def main():
             #     store_label(epoch, preds, labels.data)
             #     exit(0)
             num_tokens = masks.data.sum()
-            gap += calculate_gap(preds, masks, lengths, conllx_data.NUM_SYMBOLIC_TAGS)
             dev_corr += corr
             dev_total += num_tokens
-        print('dev corr: %d, total: %d, acc: %.2f%%, gap_err: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total,
-                                                                         gap * 100 / dev_total))
+        print('dev corr: %d, total: %d, acc: %.2f%%' % (dev_corr, dev_total, dev_corr * 100 / dev_total))
         if use_tb:
             writer.add_scalar("acc/dev", dev_corr * 100 / dev_total, epoch)
 
