@@ -1,3 +1,8 @@
+import sys
+
+sys.path.append(".")
+sys.path.append("/home/zhaoyp/zlw/pos/2neuronlp/")
+
 import torch
 import torch.nn as nn
 import math
@@ -289,7 +294,7 @@ class lveg(nn.Module):
         cs_scale, cs_mu, cs_var = gaussian_multi(s_mu, s_var, t_c_mu, t_c_var)
 
         cs_scale = cs_scale + s_weight
-        check_numerics(cs_scale)
+        # check_numerics(cs_scale)
         # shape [batch, length-1, num_labels, num_labels, num_labels, component, component, component, gaussian_dim]
         csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
@@ -297,7 +302,6 @@ class lveg(nn.Module):
 
         csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
-        check_numerics(csp_scale)
         # fixme is this expand ok? now is ok
         output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
                                                                                                      self.num_labels, self.num_labels,
@@ -338,8 +342,6 @@ class lveg(nn.Module):
         for t in range(length):
             # shape = [batch, num_label, num_label, num_label]
             curr_energy = energy_transpose[t]
-            check_numerics(partition)
-            check_numerics(tgt_energy)
             if t == 0:
                 # partition shape [batch, num_label, num_label, component, component, component]
                 partition = curr_energy[:, -1]
@@ -456,7 +458,8 @@ def natural_data():
     batch_size = 16
     num_epochs = 500
     gaussian_dim = 1
-    component = 1
+    t_comp = 2
+    e_comp = 1
     learning_rate = 1e-1
     momentum = 0.9
     gamma = 0.0
@@ -465,24 +468,23 @@ def natural_data():
     device = torch.device("cuda")
     use_tb = False
     if use_tb:
-        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/torch0.4-raw-lveg-comp2-lr0.1")
+        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-comp212-lr0.1")
     else:
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/toy2"
-    dev_path = "/home/zhaoyp/Data/pos/toy2"
-    test_path = "/home/zhaoyp/Data/pos/toy2"
+    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/toy2/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden_toy/",
                                                  train_path, data_paths=[dev_path, test_path],
-                                                 max_vocabulary_size=50000, embedd_dict=None,
-                                                 normalize_digits=False)
+                                                 max_vocabulary_size=50000, embedd_dict=None)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -492,17 +494,18 @@ def natural_data():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet, normalize_digits=False,
+                                                   type_alphabet,
                                                    use_gpu=use_gpu, symbolic_end=True)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
+                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
+                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
 
-    network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim, t_component=component)
+    network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim,
+                   t_component=t_comp, e_component=e_comp)
 
     # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
     if use_gpu:
@@ -527,9 +530,20 @@ def natural_data():
         start_time = time.time()
         num_back = 0
         network.train()
-        for batch in range(1, num_batches + 1):
-            word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
-                                                                                   unk_replace=0.0)
+        # for batch in range(1, num_batches + 1):
+        #     word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
+        #                                                                            unk_replace=0.0)
+        for batch, pack in enumerate(conllx_data.iterate_batch_variable(data_train, batch_size)):
+            # word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
+            #                                                                        unk_replace=0.0)
+            batch += 1
+            word, char, labels, _, _, masks, lengths = pack
+
+            max_len = torch.max(lengths) + 1
+
+            word = word[:, :max_len]
+            labels = labels[:, :max_len]
+            masks = masks[:, :max_len]
 
             optim.zero_grad()
             loss = network.loss(word, labels, mask=masks).mean()
@@ -571,6 +585,12 @@ def natural_data():
         dev_total = 0
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
             word, char, labels, _, _, masks, lengths = batch
+
+            max_len = torch.max(lengths) + 1
+            word = word[:, :max_len]
+            labels = labels[:, :max_len]
+            masks = masks[:, :max_len]
+
             preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
             corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
@@ -590,6 +610,12 @@ def natural_data():
             test_total = 0
             for batch in conllx_data.iterate_batch_variable(data_test, batch_size):
                 word, char, labels, _, _, masks, lengths = batch
+
+                max_len = torch.max(lengths) + 1
+                word = word[:, :max_len]
+                labels = labels[:, :max_len]
+                masks = masks[:, :max_len]
+
                 preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
                                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
                 # corr = (torch.eq(preds, labels.data).float() * masks.data).sum()
@@ -599,8 +625,8 @@ def natural_data():
             test_correct = test_corr
         print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
             dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
-        # print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-        #     test_correct, test_total, test_correct * 100 / test_total, best_epoch))
+        print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+            test_correct, test_total, test_correct * 100 / test_total, best_epoch))
 
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
@@ -714,6 +740,13 @@ def detect_inter(cs_mu, cs_var, t_p_mu, t_p_var):
         store(f, "t_p_mu:\n", t_p_mu.grad.squeeze().cpu().data)
 
         store(f, "t_p_var:\n", t_p_var.grad.squeeze().cpu().data)
+
+
+def store_label(sent, label, pred):
+    with open("lveg_with_end", 'w') as f:
+        store(f, "sentences:\n", sent)
+        store(f, "labels:\n", label)
+        store(f, "pred:\n", pred)
 
 if __name__ == '__main__':
     torch.random.manual_seed(480)

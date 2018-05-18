@@ -180,7 +180,7 @@ def main():
     window = 3
     num_layers = args.num_layers
     tag_space = args.tag_space
-    initializer = nn.init.xavier_uniform
+    initializer = nn.init.xavier_uniform_
     if args.dropout == 'std':
         if args.lveg:
             network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
@@ -238,8 +238,6 @@ def main():
             loss = network.loss(word, char, labels, mask=masks)
             # loss = network.loss(word, labels, masks)
             loss.backward()
-            store_grad(network, loss, '6', True)
-            exit(0)
             optim.step()
 
             num_inst = word.size(0)
