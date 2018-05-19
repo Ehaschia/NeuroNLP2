@@ -1,7 +1,7 @@
 import sys
 
 sys.path.append(".")
-sys.path.append("/home/zhaoyp/zlw/pos/2neuronlp/")
+sys.path.append("/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/")
 
 import torch
 import torch.nn as nn
@@ -228,6 +228,8 @@ class lveg(nn.Module):
 
         batch, length = input.size()
 
+        zero_holder = torch.zeros([batch, length]).cuda()
+
         s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
 
         s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp)
@@ -300,15 +302,18 @@ class lveg(nn.Module):
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                          t_p_mu, t_p_var)
 
+        mask1 = torch.split(mask, [1, length-1], dim=1)[1]
+        csp_scale = csp_scale * mask1.view(batch, length-1, 1, 1, 1, 1, 1, 1)
+        t_weight = t_weight * mask1.view(batch, length-1, 1, 1, 1, 1, 1, 1)
         csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
-        # fixme is this expand ok? now is ok
+
         output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
                                                                                                      self.num_labels, self.num_labels,
                                                                                                      self.t_comp, self.e_comp,
                                                                                                      self.t_comp)), dim=1)
         if mask is not None:
-            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
+            output = output * mask.view(batch, length, 1, 1, 1, 1, 1, 1)
         return output
 
     def loss(self, sents, target, mask):
@@ -356,15 +361,13 @@ class lveg(nn.Module):
                 else:
                     mask_t = mask_transpose[t]
                     partition = partition + (partition_new - partition) * mask_t
-                if t == length - 1:
-                    partition = partition[:, :, 2]
+
             if t != length - 1:
                 tmp_energy = curr_energy[
                     batch_index, prev_label, target_transpose[t], target_transpose[t + 1]]
             else:
                 tmp_energy = curr_energy[
                     batch_index, prev_label, target_transpose[t], holder]
-            # tgt_energy = logsumexp(logsumexp(tmp_energy + tgt_energy.unsqueeze(2).unsqueeze(3), dim=2), dim=1)
             tgt_energy_new = logsumexp(logsumexp(tmp_energy + tgt_energy.unsqueeze(2).unsqueeze(3), dim=2), dim=1)
             if mask_transpose is None or t is 0:
                 tgt_energy = tgt_energy_new
@@ -372,6 +375,8 @@ class lveg(nn.Module):
                 mask_t = mask_transpose[t]
                 tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
             prev_label = target_transpose[t]
+        # fixme may here is wrong
+        partition = partition.mean(dim=2)
         loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
         return loss.mean()
 
@@ -390,7 +395,7 @@ class lveg(nn.Module):
         forward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
         backward = torch.zeros([length - 1, batch_size, num_label, num_label, self.t_comp]).cuda()
         holder = torch.zeros([1, batch_size, num_label, num_label, self.t_comp]).cuda()
-        mask_transpose = mask_transpose.unsqueeze(2).unsqueeze(3).unsqueeze(4)
+        mask_transpose = mask_transpose.view(length, batch_size, 1, 1, 1)
         # fixme version 2  remove leading_symbolic before expect_count
         for i in range(0, length - 1):
             if i == 0:
@@ -415,7 +420,8 @@ class lveg(nn.Module):
         backward = torch.cat((backward, holder), dim=0)
 
         cnt = logsumexp(forward + backward, dim=-1)
-        cnt_transpose = cnt[:, :, :-1, :-1]
+        cnt = cnt * mask_transpose.view(length, batch_size, 1, 1)
+        cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
 
         length, batch_size, num_label, _ = cnt_transpose.size()
 
@@ -431,8 +437,8 @@ class lveg(nn.Module):
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
         # pi[0] = energy[:, 0, -1, leading_symbolic:-1]
-        # viterbi docoding?
-        pi[0] = cnt[0, :, -1, :-1]
+        # viterbi docoding
+        pi[0] = cnt[0, :, -1, leading_symbolic:-1]
         pointer[0] = -1
         for t in range(1, length):
             pi_prev = pi[t - 1].unsqueeze(2)
@@ -442,7 +448,7 @@ class lveg(nn.Module):
         for t in reversed(range(length - 1)):
             pointer_last = pointer[t + 1]
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
-        preds = back_pointer.transpose(0, 1)
+        preds = back_pointer.transpose(0, 1) + leading_symbolic
         if target is None:
             return preds, None
         # if lengths is not None:
@@ -458,7 +464,7 @@ def natural_data():
     batch_size = 16
     num_epochs = 500
     gaussian_dim = 1
-    t_comp = 2
+    t_comp = 1
     e_comp = 1
     learning_rate = 1e-1
     momentum = 0.9
@@ -466,23 +472,23 @@ def natural_data():
     schedule = 5
     decay_rate = 0.05
     device = torch.device("cuda")
-    use_tb = False
+    use_tb = True
     if use_tb:
-        writer = SummaryWriter(log_dir="/home/zhaoyp/zlw/pos/2neuronlp/tensorboard/uden/raw-lveg-comp212-lr0.1")
+        writer = SummaryWriter(log_dir="/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/tensorboard/uden/raw-lveg-mask-lr0.1")
     else:
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
-    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
+    train_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-train.conllu_clean_cnn"
+    dev_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-dev.conllu_clean_cnn"
+    test_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden_toy/",
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/uden/",
                                                  train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
@@ -495,14 +501,14 @@ def natural_data():
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
                                                    type_alphabet,
-                                                   use_gpu=use_gpu, symbolic_end=True)
+                                                   use_gpu=use_gpu)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                 use_gpu=use_gpu, volatile=True)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True)
+                                                  use_gpu=use_gpu, volatile=True)
 
     network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim,
                    t_component=t_comp, e_component=e_comp)
@@ -530,18 +536,14 @@ def natural_data():
         start_time = time.time()
         num_back = 0
         network.train()
-        # for batch in range(1, num_batches + 1):
-        #     word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
-        #                                                                            unk_replace=0.0)
         for batch in range(1, num_batches + 1):
             word, _, labels, _, _, masks, lengths = conllx_data.get_batch_variable(data_train, batch_size,
                                                                                    unk_replace=0.0)
 
-            max_len = torch.max(lengths) + 1
-
-            word = word[:, :max_len]
-            labels = labels[:, :max_len]
-            masks = masks[:, :max_len]
+            # max_len = torch.max(lengths) + 1
+            # word = word[:, :max_len]
+            # labels = labels[:, :max_len]
+            # masks = masks[:, :max_len]
 
             optim.zero_grad()
             loss = network.loss(word, labels, mask=masks).mean()
@@ -584,10 +586,10 @@ def natural_data():
         for batch in conllx_data.iterate_batch_variable(data_dev, batch_size):
             word, char, labels, _, _, masks, lengths = batch
 
-            max_len = torch.max(lengths) + 1
-            word = word[:, :max_len]
-            labels = labels[:, :max_len]
-            masks = masks[:, :max_len]
+            # max_len = torch.max(lengths) + 1
+            # word = word[:, :max_len]
+            # labels = labels[:, :max_len]
+            # masks = masks[:, :max_len]
 
             preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
                                          leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
@@ -609,10 +611,10 @@ def natural_data():
             for batch in conllx_data.iterate_batch_variable(data_test, batch_size):
                 word, char, labels, _, _, masks, lengths = batch
 
-                max_len = torch.max(lengths) + 1
-                word = word[:, :max_len]
-                labels = labels[:, :max_len]
-                masks = masks[:, :max_len]
+                # max_len = torch.max(lengths) + 1
+                # word = word[:, :max_len]
+                # labels = labels[:, :max_len]
+                # masks = masks[:, :max_len]
 
                 preds, corr = network.decode(word, mask=masks, target=labels, lengths=None,
                                              leading_symbolic=conllx_data.NUM_SYMBOLIC_TAGS)
@@ -738,13 +740,6 @@ def detect_inter(cs_mu, cs_var, t_p_mu, t_p_var):
         store(f, "t_p_mu:\n", t_p_mu.grad.squeeze().cpu().data)
 
         store(f, "t_p_var:\n", t_p_var.grad.squeeze().cpu().data)
-
-
-def store_label(sent, label, pred):
-    with open("lveg_with_end", 'w') as f:
-        store(f, "sentences:\n", sent)
-        store(f, "labels:\n", label)
-        store(f, "pred:\n", pred)
 
 if __name__ == '__main__':
     torch.random.manual_seed(480)
