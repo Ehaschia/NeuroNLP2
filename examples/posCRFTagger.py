@@ -139,8 +139,7 @@ def main():
     use_gpu = torch.cuda.is_available()
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet,normalize_digits=False,
-                                                   use_gpu=use_gpu, symbolic_end=True)
+                                                   type_alphabet, use_gpu=use_gpu)
     # data_train = conllx_data.read_data(train_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet)
     # num_data = sum([len(bucket) for bucket in data_train])
 
@@ -149,9 +148,9 @@ def main():
     num_labels = pos_alphabet.size()
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
+                                                 use_gpu=use_gpu, volatile=True)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, symbolic_end=True, normalize_digits=False)
+                                                  use_gpu=use_gpu, volatile=True)
 
     def construct_word_embedding_table():
         scale = np.sqrt(3.0 / embedd_dim)

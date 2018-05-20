@@ -302,9 +302,9 @@ class lveg(nn.Module):
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                          t_p_mu, t_p_var)
 
-        mask1 = torch.split(mask, [1, length-1], dim=1)[1]
-        csp_scale = csp_scale * mask1.view(batch, length-1, 1, 1, 1, 1, 1, 1)
-        t_weight = t_weight * mask1.view(batch, length-1, 1, 1, 1, 1, 1, 1)
+        mask1 = torch.split(mask, [1, length-1], dim=1)[1].view(batch, length-1, 1, 1, 1, 1, 1, 1)
+        csp_scale = csp_scale * mask1
+        t_weight = t_weight * mask1
         csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
 

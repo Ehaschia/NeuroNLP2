@@ -178,10 +178,6 @@ class ChainLVeG(nn.Module):
                 t_p_var = self.trans_mat_p_var.view(1, 1, 1, 1, 1, 1, 1, 1, 1)
                 t_c_var = self.trans_mat_c_var.view(1, 1, 1, 1, 1, 1, 1, 1)
 
-        # t_p_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
-        # t_p_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
-        # t_c_mu = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
-        # t_c_var = Variable(torch.zeros(batch, length, self.num_labels, self.num_labels, self.gaussian_dim)).cuda()
 
 
         # Gaussian Multiply:
@@ -190,12 +186,6 @@ class ChainLVeG(nn.Module):
         # mu of N` is (mu1*sigma2^2 + mu2^sigma1^2)/(sigma1^2 + sigma2^2)
         # var of N` is log(sigma1) + log(sigma2) - (1/2)*log(sigma1^2 + sigma2^2)
 
-        # s_mu = F.tanh(s_mu)
-        # s_var = F.tanh(s_var)
-        # t_p_mu = F.tanh(t_p_mu)
-        # t_p_var = F.tanh(t_p_var)
-        # t_c_mu = F.tanh(t_c_mu)
-        # t_c_var = F.tanh(t_c_var)
 
         s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
         s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
@@ -230,17 +220,21 @@ class ChainLVeG(nn.Module):
         cs_scale, cs_mu, cs_var = gaussian_multi(s_mu, s_var, t_c_mu, t_c_var)
 
         cs_scale = cs_scale + s_weight
+        mask1 = torch.split(mask, [1, length-1], dim=1)[1].view(batch, length-1, 1, 1, 1, 1, 1, 1)
         if self.bigram:
             csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
                                              cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                              t_p_mu[:, 1:], t_p_var[:, 1:])
-            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight[:, 1:]
+            csp_scale = csp_scale * mask1
+            t_weight_part = t_weight[:, 1:] * mask1
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight_part
         else:
             csp_scale, _, _ = gaussian_multi(cs_mu[:, :-1].unsqueeze(4).unsqueeze(7),
                                              cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                              t_p_mu, t_p_var)
-
-            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
+            csp_scale = csp_scale * mask1
+            t_weight_part = t_weight * mask1
+            csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight_part
 
         # fixme is this expand ok?
         output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
@@ -248,7 +242,7 @@ class ChainLVeG(nn.Module):
                                                                                                      self.t_comp, self.e_comp,
                                                                                                      self.t_comp)), dim=1)
         if mask is not None:
-            output = output * mask.unsqueeze(2).unsqueeze(3).unsqueeze(4).unsqueeze(5).unsqueeze(6).unsqueeze(7)
+            output = output * mask.view(batch, length, 1, 1, 1, 1, 1, 1)
         return output
 
     def loss(self, input, target, mask=None):
@@ -309,8 +303,6 @@ class ChainLVeG(nn.Module):
                 else:
                     mask_t = mask_transpose[t]
                     partition = partition + (partition_new - partition) * mask_t
-                if t == length - 1:
-                    partition = partition[:, :, 2]
             if t != length - 1:
                 tmp_energy = curr_energy[
                     batch_index, prev_label, target_transpose[t], target_transpose[t + 1]]
@@ -325,6 +317,7 @@ class ChainLVeG(nn.Module):
                 mask_t = mask_transpose[t]
                 tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
             prev_label = target_transpose[t]
+        partition = partition.mean(dim=2)
         loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
         return loss.mean()
 
@@ -390,7 +383,7 @@ class ChainLVeG(nn.Module):
         # cnt = cnt * mask_transpose.unsqueeze(2).unsqueeze(3)
         # cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
         cnt = logsumexp(forward + backward, dim=-1)
-        cnt_transpose = cnt[:, :, :-1, :-1]
+        cnt_transpose = cnt[:, :, leading_symbolic:-1, leading_symbolic:-1]
         length, batch_size, num_label, _ = cnt_transpose.size()
 
         if input.is_cuda:
@@ -405,7 +398,7 @@ class ChainLVeG(nn.Module):
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
         # viterbi docoding?
-        pi[0] = cnt[0, :, -1, :-1]
+        pi[0] = cnt[0, :, -1, leading_symbolic:-1]
         pointer[0] = -1
         for t in range(1, length):
             pi_prev = pi[t - 1].unsqueeze(2)
@@ -416,4 +409,4 @@ class ChainLVeG(nn.Module):
             pointer_last = pointer[t + 1]
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
 
-        return back_pointer.transpose(0, 1)
+        return back_pointer.transpose(0, 1) + leading_symbolic

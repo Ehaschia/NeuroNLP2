@@ -363,8 +363,7 @@ def read_data_to_variable(source_path, word_alphabet, char_alphabet, pos_alphabe
             hid_inputs[i, :inst_size] = hids
             hid_inputs[i, inst_size:] = PAD_ID_TAG
             # masks
-            # fixme for add symbolic end but we should remove it when test.
-            masks[i, :inst_size-1] = 1.0
+            masks[i, :inst_size] = 1.0
             for j, wid in enumerate(wids):
                 if word_alphabet.is_singleton(wid):
                     single[i, j] = 1
