@@ -87,8 +87,8 @@ def main():
     parser.add_argument('--language', type=str, default='wsj')
     parser.add_argument('--spherical', default=False, action='store_true')
     parser.add_argument('--gaussian-dim', type=int, default=1)
-    parser.add_argument('--t-component', type=int, default=1)
-    parser.add_argument('--e-component', type=int, default=1)
+    parser.add_argument('--t-comp', type=int, default=1)
+    parser.add_argument('--e-comp', type=int, default=1)
     parser.add_argument('--use-tensorboard', default=False, action='store_true')
     parser.add_argument('--log-dir', type=str, default='./tensorboard/')
 
@@ -185,7 +185,8 @@ def main():
             network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                           window, mode, hidden_size, num_layers, num_labels,
                                           tag_space=tag_space, embedd_word=word_table, bigram=bigram, p_in=p_in,
-                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer, gaussian_dim=args.gaussian_dim)
+                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer, t_comp=args.tcomp,
+                                          e_comp=args.e_comp, gaussian_dim=args.gaussian_dim)
         else:
             network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                          window, mode, hidden_size, num_layers, num_labels,
