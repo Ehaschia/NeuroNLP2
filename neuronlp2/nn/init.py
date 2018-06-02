@@ -13,7 +13,9 @@ def assign_tensor(tensor, val):
     Returns:
 
     """
-    if isinstance(tensor, Variable):
+    # # fixme fix for torch4.0
+    if tensor.requires_grad:
+    # if isinstance(tensor, Variable):
         assign_tensor(tensor.data, val)
         return tensor
 

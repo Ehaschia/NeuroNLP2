@@ -175,19 +175,19 @@ class ChainCRF(nn.Module):
 
         if input.is_cuda:
             batch_index = torch.arange(0, batch_size).long().cuda()
-            pi = torch.zeros([length, batch_size, num_label, 1]).cuda()
+            pi = torch.zeros([length, batch_size, num_label]).cuda()
             pointer = torch.cuda.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.cuda.LongTensor(length, batch_size).zero_()
         else:
             batch_index = torch.arange(0, batch_size).long()
-            pi = torch.zeros([length, batch_size, num_label, 1])
+            pi = torch.zeros([length, batch_size, num_label])
             pointer = torch.LongTensor(length, batch_size, num_label).zero_()
             back_pointer = torch.LongTensor(length, batch_size).zero_()
 
         pi[0] = energy[:, 0, -1, leading_symbolic:-1]
         pointer[0] = -1
         for t in range(1, length):
-            pi_prev = pi[t - 1]
+            pi_prev = pi[t - 1].unsqueeze(2)
             pi[t], pointer[t] = torch.max(energy_transpose[t] + pi_prev, dim=1)
 
         _, back_pointer[-1] = torch.max(pi[-1], dim=1)
