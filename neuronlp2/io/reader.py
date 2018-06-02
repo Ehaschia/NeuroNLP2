@@ -65,7 +65,7 @@ class CoNLLXReader(object):
 
             word = utils.DIGIT_RE.sub(b"0", tokens[1]) if normalize_digits else tokens[1]
             pos = tokens[4]
-            head = int(tokens[6])
+            head = 0 # int(tokens[6])
             type = tokens[7]
 
             words.append(word)
