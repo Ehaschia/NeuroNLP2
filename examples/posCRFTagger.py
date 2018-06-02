@@ -91,6 +91,7 @@ def main():
     parser.add_argument('--e-comp', type=int, default=1)
     parser.add_argument('--use-tensorboard', default=False, action='store_true')
     parser.add_argument('--log-dir', type=str, default='./tensorboard/')
+    parser.add_argument('--lveg-clip', type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -128,8 +129,7 @@ def main():
     word_alphabet, char_alphabet, pos_alphabet, \
     type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/" + args.language + '/',
                                                  train_path, data_paths=[dev_path, test_path],
-                                                 max_vocabulary_size=50000, embedd_dict=embedd_dict,
-                                                 normalize_digits=False)
+                                                 max_vocabulary_size=50000, embedd_dict=embedd_dict)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
     logger.info("Character Alphabet Size: %d" % char_alphabet.size())
@@ -185,7 +185,7 @@ def main():
             network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                           window, mode, hidden_size, num_layers, num_labels,
                                           tag_space=tag_space, embedd_word=word_table, bigram=bigram, p_in=p_in,
-                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer, t_comp=args.tcomp,
+                                          p_out=p_out, p_rnn=p_rnn, initializer=initializer, t_comp=args.t_comp,
                                           e_comp=args.e_comp, gaussian_dim=args.gaussian_dim)
         else:
             network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
@@ -238,10 +238,13 @@ def main():
             loss = network.loss(word, char, labels, mask=masks)
             # loss = network.loss(word, labels, masks)
             loss.backward()
+            # store_grad(network, loss, str(batch), True, input=lveg_input)
+            # store_energy(str(batch), loss, energy[0], network, inner_score=energy[1])
+            # if batch == 40:
+            #     exit(0)
             optim.step()
 
             num_inst = word.size(0)
-            # fixme for torch0.4
             # train_err += loss.data[0] * num_tokens
             train_err += loss.item() * num_inst
             train_total += num_inst
@@ -355,77 +358,132 @@ def main():
 
 def store(file, name, tensor):
     file.write(name)
-    file.write(np.array2string(tensor.numpy(), precision=2, separator=',', suppress_small=True))
+    file.write(np.array2string(tensor.numpy(), precision=4, separator=',', suppress_small=True, threshold=int(1e8)))
     file.write("\n\n")
 
-def store_grad(network, loss, v, is_cuda):
+def store_grad(network, loss, v, is_cuda, input=None):
     if is_cuda:
-        with open("nnlveg_param_" + v, 'w') as f:
+        with open("energy/nnlveg_param_" + v, 'w') as f:
             store(f, "loss:\n", loss.squeeze().data.cpu())
-            store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.squeeze().data.cpu())
-            store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.squeeze().data.cpu())
-            store(f, "trans_mat_p_var:\n", network.lveg.trans_mat_p_var.squeeze().data.cpu())
-            store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.squeeze().data.cpu())
-            store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.squeeze().data.cpu())
-            store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.weight.squeeze().data.cpu())
-            store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.weight.squeeze().data.cpu())
-            store(f, "state_nn_var:\n", network.lveg.state_nn_var.weight.squeeze().data.cpu())
-        with open("nnlveg_grad_" + v, 'w') as f:
-            if network.lveg.trans_mat_weight.grad is not None:
-                store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.grad.squeeze().data.cpu())
-            if network.lveg.trans_mat_p_mu.grad is not None:
-                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.grad.squeeze().data.cpu())
-            if network.lveg.trans_mat_p_var.grad is not None:
-                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_var.grad.squeeze().data.cpu())
-            if network.lveg.trans_mat_c_mu.grad is not None:
-                store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.grad.squeeze().data.cpu())
-            if network.lveg.trans_mat_c_var.grad is not None:
-                store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.grad.squeeze().data.cpu())
+            store(f, "normal/trans_nn_weight:\n", network.lveg.trans_nn_weight.weight.squeeze().data.cpu())
+            store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_nn_p_mu.weight.squeeze().data.cpu())
+            store(f, "normal/trans_nn_p_var:\n", network.lveg.trans_nn_p_var.weight.squeeze().data.cpu())
+            store(f, "normal/trans_nn_c_mu:\n", network.lveg.trans_nn_c_mu.weight.squeeze().data.cpu())
+            store(f, "normal/trans_nn_c_var:\n", network.lveg.trans_nn_c_var.weight.squeeze().data.cpu())
+            store(f, "normal/state_nn_weight:\n", network.lveg.state_nn_weight.weight.squeeze().data.cpu())
+            store(f, "normal/state_nn_mu:\n", network.lveg.state_nn_mu.weight.squeeze().data.cpu())
+            store(f, "normal/state_nn_var:\n", network.lveg.state_nn_var.weight.squeeze().data.cpu())
+            if input is not None:
+                store(f, "normal/input:\n", input.squeeze().data.cpu())
+        with open("energy/nnlveg_grad_" + v, 'w') as f:
+            if network.lveg.trans_nn_weight.weight.grad is not None:
+                store(f, "normal/trans_nn_weight:\n", network.lveg.trans_nn_weight.weight.grad.squeeze().data.cpu())
+            if network.lveg.trans_nn_p_mu.weight.grad is not None:
+                store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_nn_p_mu.weight.grad.squeeze().data.cpu())
+            if network.lveg.trans_nn_p_var.weight.grad is not None:
+                store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_nn_p_var.weight.grad.squeeze().data.cpu())
+            if network.lveg.trans_nn_c_mu.weight.grad is not None:
+                store(f, "normal/trans_nn_c_mu:\n", network.lveg.trans_nn_c_mu.weight.grad.squeeze().data.cpu())
+            if network.lveg.trans_nn_c_var.weight.grad is not None:
+                store(f, "normal/trans_nn_c_var:\n", network.lveg.trans_nn_c_var.weight.grad.squeeze().data.cpu())
             if network.lveg.state_nn_weight.weight.grad is not None:
-                store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.weight.grad.squeeze().data.cpu())
+                store(f, "normal/state_nn_weight:\n", network.lveg.state_nn_weight.weight.grad.squeeze().data.cpu())
             if network.lveg.state_nn_mu.weight.grad is not None:
-                store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.weight.grad.squeeze().data.cpu())
+                store(f, "normal/state_nn_mu:\n", network.lveg.state_nn_mu.weight.grad.squeeze().data.cpu())
             if network.lveg.state_nn_var.weight.grad is not None:
-                store(f, "state_nn_var:\n", network.lveg.state_nn_var.weight.grad.squeeze().data.cpu())
+                store(f, "normal/state_nn_var:\n", network.lveg.state_nn_var.weight.grad.squeeze().data.cpu())
+            if input is not None:
+                store(f, 'normal/input:\n', input.grad.squeeze().data.cpu())
     else:
 
-        with open("nnlveg_param_" + v, 'w') as f:
+        with open("energy/nnlveg_param_" + v, 'w') as f:
             store(f, "loss:\n", loss.squeeze().data)
 
-            store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.squeeze().data)
+            store(f, "normal/trans_nn_weight:\n", network.lveg.trans_nn_weight.squeeze().data)
 
-            store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.squeeze().data)
+            store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_nn_p_mu.squeeze().data)
 
-            store(f, "trans_mat_p_var:\n", network.lveg.trans_mat_p_var.squeeze().data)
+            store(f, "normal/trans_nn_p_var:\n", network.lveg.trans_nn_p_var.squeeze().data)
 
-            store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.squeeze().data)
+            store(f, "normal/trans_nn_c_mu:\n", network.lveg.trans_nn_c_mu.squeeze().data)
 
-            store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.squeeze().data)
+            store(f, "normal/trans_nn_c_var:\n", network.lveg.trans_nn_c_var.squeeze().data)
 
-            store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.squeeze().data)
+            store(f, "normal/state_nn_weight:\n", network.lveg.state_nn_weight.squeeze().data)
 
-            store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.squeeze().data)
+            store(f, "normal/state_nn_mu:\n", network.lveg.state_nn_mu.squeeze().data)
 
-            store(f, "state_nn_var:\n", network.lveg.s_var_em.squeeze().data)
+            store(f, "normal/state_nn_var:\n", network.lveg.s_var_em.squeeze().data)
 
-        with open("nnlveg_grad_" + v, 'w') as f:
+            if input is not None:
+                store(f, "normal/input:\n", input.squeeze().data)
+
+        with open("energy/nnlveg_grad_" + v, 'w') as f:
             if network.lveg.trans_weight.grad is not None:
-                store(f, "trans_mat_weight:\n", network.lveg.trans_mat_weight.grad.squeeze().data)
+                store(f, "normal/trans_nn_weight:\n", network.lveg.trans_mat_weight.grad.squeeze().data)
             if network.lveg.trans_p_mu.grad is not None:
-                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_mu.grad.squeeze().data)
+                store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_mat_p_mu.grad.squeeze().data)
             if network.lveg.trans_p_var.grad is not None:
-                store(f, "trans_mat_p_mu:\n", network.lveg.trans_mat_p_var.grad.squeeze().data)
+                store(f, "normal/trans_nn_p_mu:\n", network.lveg.trans_mat_p_var.grad.squeeze().data)
             if network.lveg.trans_c_mu.grad is not None:
-                store(f, "trans_mat_c_mu:\n", network.lveg.trans_mat_c_mu.grad.squeeze().data)
+                store(f, "normal/trans_nn_c_mu:\n", network.lveg.trans_mat_c_mu.grad.squeeze().data)
             if network.lveg.trans_c_var.grad is not None:
-                store(f, "trans_mat_c_var:\n", network.lveg.trans_mat_c_var.grad.squeeze().data)
+                store(f, "normal/trans_nn_c_var:\n", network.lveg.trans_mat_c_var.grad.squeeze().data)
             if network.lveg.s_weight_em.weight.grad is not None:
-                store(f, "state_nn_weight:\n", network.lveg.state_nn_weight.grad.squeeze().data)
+                store(f, "normal/state_nn_weight:\n", network.lveg.state_nn_weight.grad.squeeze().data)
             if network.lveg.s_mu_em.weight.grad is not None:
-                store(f, "state_nn_mu:\n", network.lveg.state_nn_mu.grad.squeeze().data)
+                store(f, "normal/state_nn_mu:\n", network.lveg.state_nn_mu.grad.squeeze().data)
             if network.lveg.s_var_em.weight.grad is not None:
-                store(f, "state_nn_var:\n", network.lveg.state_nn_var.grad.squeeze().data)
+                store(f, "normal/state_nn_var:\n", network.lveg.state_nn_var.grad.squeeze().data)
+            if input is not None:
+                store(f, 'normal/input:\n', input.grad.squeeze().data)
+
+def store_energy(v, loss, energy, network, inner_score=None):
+    energy_param = energy.squeeze().data.cpu().numpy()
+    if np.sum((np.abs(energy_param) > 100.0).astype(int)) > 0:
+        with open('energy/param_' + v, 'w') as f:
+            store(f, "loss:\n", loss.squeeze().data.cpu())
+            store(f, "energy_param:\n", energy.squeeze().data.cpu())
+            store(f, 'energy_grad:\n', energy.grad.squeeze().data.cpu())
+            store_grad(network, loss, v, True)
+        with open('energy/energy_idx' + v, 'w') as f:
+            energy_idx = np.argwhere(np.abs(energy_param) > 100.0)
+            store(f, "\n", torch.from_numpy(energy_idx))
+        if inner_score is not None:
+            s_weight, s_mu, s_var, t_weight, t_p_mu, t_p_var, t_c_mu, t_c_var, cs_scale, cs_mu, cs_var, csp_scale,\
+                s_mu_numpy, s_var_numpy, t_p_mu_numpy, t_p_var_numpy, t_c_mu_numpy, t_c_var_numpy = inner_score
+            np.save('energy/s_weight_' + v, s_weight.data.cpu().numpy())
+            np.save('energy/s_mu_' + v, s_mu.data.cpu().numpy())
+            np.save('energy/s_var_' + v, s_var.data.cpu().numpy())
+            np.save('energy/t_weight_' + v, t_weight.data.cpu().numpy())
+            np.save('energy/t_p_mu_' + v, t_p_mu.data.cpu().numpy())
+            np.save('energy/t_p_var_' + v, t_p_var.data.cpu().numpy())
+            np.save('energy/t_c_var_' + v, t_c_var.data.cpu().numpy())
+            np.save('energy/t_c_mu_' + v, t_c_mu.data.cpu().numpy())
+            np.save('energy/cs_scale_' + v, cs_scale.data.cpu().numpy())
+            np.save('energy/cs_mu_' + v, cs_mu.data.cpu().numpy())
+            np.save('energy/cs_var_' + v, cs_var.data.cpu().numpy())
+            np.save('energy/csp_scale_' + v, csp_scale.data.cpu().numpy())
+            np.save('energy/nc_s_mu_' + v, s_mu_numpy)
+            np.save('energy/nc_s_var_' + v, s_var_numpy)
+            np.save('energy/nc_t_p_mu_' + v, t_p_mu_numpy)
+            np.save('energy/nc_t_p_var_' + v, t_p_var_numpy)
+            np.save('energy/nc_t_c_mu_' + v, t_c_mu_numpy)
+            np.save('energy/nc_t_c_var_' + v, t_c_var_numpy)
+
+            np.save('energy/s_mu_grad_' + v, s_mu.grad.cpu().data.numpy())
+            np.save('energy/s_weight_grad_' + v, s_weight.grad.cpu().data.numpy())
+            np.save('energy/s_var_grad_' + v, s_var.grad.cpu().data.numpy())
+            np.save('energy/t_weight_grad_' + v, t_weight.grad.cpu().data.numpy())
+            np.save('energy/t_p_mu_grad_' + v, t_p_mu.grad.cpu().data.numpy())
+            np.save('energy/t_p_var_grad_' + v, t_p_var.grad.cpu().data.numpy())
+            np.save('energy/t_c_var_grad_' + v, t_c_var.grad.cpu().data.numpy())
+            np.save('energy/t_c_mu_grad_' + v, t_c_mu.grad.cpu().data.numpy())
+            np.save('energy/cs_scale_grad_' + v, cs_scale.grad.cpu().data.numpy())
+            np.save('energy/csp_scale_grad_' + v, csp_scale.grad.cpu().data.numpy())
+
+    return energy
 if __name__ == '__main__':
-    torch.random.manual_seed(480)
-    np.random.seed(480)
+    torch.random.manual_seed(48)
+    np.random.seed(48)
     main()

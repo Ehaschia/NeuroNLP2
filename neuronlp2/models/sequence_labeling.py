@@ -307,7 +307,8 @@ class BiVarRecurrentConvCRF(BiVarRecurrentConv):
 class BiRecurrentConvLVeG(BiRecurrentConv):
     def __init__(self, word_dim, num_words, char_dim, num_chars, num_filters, kernel_size, rnn_mode, hidden_size,
                  num_layers, num_labels, tag_space=0, embedd_word=None, embedd_char=None, p_in=0.33, p_out=0.5,
-                 p_rnn=(0.5, 0.5), bigram=False, initializer=None, spherical=False, t_comp=1, e_comp=1, gaussian_dim=1):
+                 p_rnn=(0.5, 0.5), bigram=False, initializer=None, spherical=False, t_comp=1, e_comp=1, gaussian_dim=1,
+                 clip=1.0):
         super(BiRecurrentConvLVeG, self).__init__(word_dim, num_words, char_dim, num_chars, num_filters, kernel_size,
                                                   rnn_mode, hidden_size, num_layers, num_labels,
                                                   tag_space=tag_space, embedd_word=embedd_word, embedd_char=embedd_char,
@@ -315,7 +316,7 @@ class BiRecurrentConvLVeG(BiRecurrentConv):
 
         out_dim = tag_space if tag_space else hidden_size * 2
         self.lveg = ChainLVeG(out_dim, num_labels, bigram=bigram, spherical=spherical,
-                              t_comp=t_comp, e_comp=e_comp, gaussian_dim=gaussian_dim)
+                              t_comp=t_comp, e_comp=e_comp, gaussian_dim=gaussian_dim, clip=clip)
         self.dense_softmax = None
         self.logsoftmax = None
         self.nll_loss = None
@@ -337,7 +338,7 @@ class BiRecurrentConvLVeG(BiRecurrentConv):
             target = target[:, :max_len]
 
         # [batch, length, num_label,  num_label]
-        return self.lveg.loss(output, target, mask=mask).mean()
+        return self.lveg.loss(output, target, mask=mask)
 
     def decode(self, input_word, input_char, target=None, mask=None, length=None, hx=None, leading_symbolic=0):
         # output from rnn [batch, length, tag_space]

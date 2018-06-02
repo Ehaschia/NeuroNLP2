@@ -18,6 +18,7 @@ from tensorboardX import SummaryWriter
 import torch.nn.functional as F
 from neuronlp2.nn.utils import check_numerics
 import os
+
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
 
@@ -193,7 +194,7 @@ class ChainCRF(nn.Module):
             return preds, torch.eq(preds, target.data).float().sum()
         else:
             return preds, (torch.eq(preds, target.data).float() * mask.data).sum()
-        # return back_pointer.transpose(0, 1) + leading_symbolic
+            # return back_pointer.transpose(0, 1) + leading_symbolic
 
 
 class lveg(nn.Module):
@@ -228,8 +229,6 @@ class lveg(nn.Module):
 
         batch, length = input.size()
 
-        zero_holder = torch.zeros([batch, length]).cuda()
-
         s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
 
         s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1, self.e_comp)
@@ -246,7 +245,6 @@ class lveg(nn.Module):
 
         t_c_var = self.trans_c_var.view(1, 1, self.num_labels, self.num_labels, self.t_comp, 1, self.gaussian_dim)
 
-
         # s_mu = F.tanh(s_mu)
         # s_var = F.tanh(s_var)
         # t_p_mu = F.tanh(t_p_mu)
@@ -260,6 +258,7 @@ class lveg(nn.Module):
         t_p_var = torch.clamp(t_p_var, min=self.min_clip, max=self.max_clip)
         t_c_mu = torch.clamp(t_c_mu, min=self.min_clip, max=self.max_clip)
         t_c_var = torch.clamp(t_c_var, min=self.min_clip, max=self.max_clip)
+
         # check_numerics(s_weight)
         # check_numerics(s_mu)
         # check_numerics(s_var)
@@ -292,6 +291,7 @@ class lveg(nn.Module):
             # check_numerics(mu)
             # check_numerics(var)
             return scale, mu, var
+
         # shape [batch, length, num_labels, num_labels, component, component, gaussian_dim]
         cs_scale, cs_mu, cs_var = gaussian_multi(s_mu, s_var, t_c_mu, t_c_var)
 
@@ -302,16 +302,17 @@ class lveg(nn.Module):
                                          cs_var[:, :-1].unsqueeze(4).unsqueeze(7),
                                          t_p_mu, t_p_var)
 
-        mask1 = torch.split(mask, [1, length-1], dim=1)[1].view(batch, length-1, 1, 1, 1, 1, 1, 1)
+        mask1 = torch.split(mask, [1, length - 1], dim=1)[1].view(batch, length - 1, 1, 1, 1, 1, 1, 1)
         csp_scale = csp_scale * mask1
         t_weight = t_weight * mask1
         csp_scale = csp_scale + cs_scale[:, :-1].unsqueeze(4).unsqueeze(7) + t_weight
         # output shape [batch, length, num_labels, num_labels, num_labels, component, component, component]
 
-        output = torch.cat((csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
-                                                                                                     self.num_labels, self.num_labels,
-                                                                                                     self.t_comp, self.e_comp,
-                                                                                                     self.t_comp)), dim=1)
+        output = torch.cat(
+            (csp_scale, cs_scale[:, -1].unsqueeze(1).unsqueeze(4).unsqueeze(7).expand(batch, 1, self.num_labels,
+                                                                                      self.num_labels, self.num_labels,
+                                                                                      self.t_comp, self.e_comp,
+                                                                                      self.t_comp)), dim=1)
         if mask is not None:
             output = output * mask.view(batch, length, 1, 1, 1, 1, 1, 1)
         return output
@@ -375,7 +376,6 @@ class lveg(nn.Module):
                 mask_t = mask_transpose[t]
                 tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
             prev_label = target_transpose[t]
-        # fixme may here is wrong
         partition = partition.mean(dim=2)
         loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
         return loss.mean()
@@ -402,11 +402,15 @@ class lveg(nn.Module):
                 forward[i] = logsumexp(logsumexp(energy_transpose[i, :, -1], dim=4), dim=3)
                 backward[i] = logsumexp(logsumexp(reverse_energy_transpose[i, :, :, :, 2], dim=5), dim=4)
             else:
-                forward[i] = logsumexp(logsumexp(logsumexp(forward[i - 1].unsqueeze(3).unsqueeze(5).unsqueeze(6) + energy_transpose[i], dim=5), dim=4), dim=1)
+                forward[i] = logsumexp(logsumexp(
+                    logsumexp(forward[i - 1].unsqueeze(3).unsqueeze(5).unsqueeze(6) + energy_transpose[i], dim=5),
+                    dim=4), dim=1)
                 forward[i] = forward[i - 1] + (forward[i] - forward[i - 1]) * mask_transpose[i]
                 # backward[i] = logsumexp(backward[i - 1].unsqueeze(1) + reverse_energy_transpose[i], dim=3) \
                 #               * mask_transpose[i].unsqueeze(1).unsqueeze(2)
-                backward[i] = logsumexp(logsumexp(logsumexp(backward[i - 1].unsqueeze(1).unsqueeze(4).unsqueeze(5) + reverse_energy_transpose[i], dim=6), dim=5), dim=3)
+                backward[i] = logsumexp(logsumexp(
+                    logsumexp(backward[i - 1].unsqueeze(1).unsqueeze(4).unsqueeze(5) + reverse_energy_transpose[i],
+                              dim=6), dim=5), dim=3)
                 backward[i] = backward[i - 1] + (backward[i] - backward[i - 1]) * mask_transpose[i]
 
         # detect score calculate by forward and backward, should be equal
@@ -461,8 +465,8 @@ class lveg(nn.Module):
 
 
 def natural_data():
-    batch_size = 16
-    num_epochs = 500
+    batch_size = 4
+    num_epochs = 100
     gaussian_dim = 1
     t_comp = 1
     e_comp = 1
@@ -472,16 +476,20 @@ def natural_data():
     schedule = 5
     decay_rate = 0.05
     device = torch.device("cuda")
-    use_tb = True
+    use_tb = False
+
+    # pre = 'uden_'
+    # threshold = 125
     if use_tb:
-        writer = SummaryWriter(log_dir="/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/tensorboard/uden/raw-lveg-mask-lr0.1")
+        writer = SummaryWriter(
+            log_dir="/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/tensorboard/uden/raw-lveg-mask-lr0.1")
     else:
         writer = None
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-train.conllu_clean_cnn"
-    dev_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-dev.conllu_clean_cnn"
-    test_path = "/public/sist/home/zhanglw/code/pos/0518/NeuroNLP2/data1/en-ud-test.conllu_clean_cnn"
+    train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/zhaoyp/Data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/zhaoyp/Data/pos/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
@@ -502,6 +510,7 @@ def natural_data():
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
                                                    type_alphabet,
                                                    use_gpu=use_gpu)
+    # pw_cnt_map, pp_cnt_map = store_cnt(data_train, word_alphabet, pos_alphabet)
 
     num_data = sum(data_train[1])
 
@@ -514,6 +523,7 @@ def natural_data():
                    t_component=t_comp, e_component=e_comp)
 
     # network = ChainCRF(word_alphabet.size(), pos_alphabet.size())
+    # store_gaussians(network, word_alphabet, pos_alphabet, '0', pw_cnt_map, pp_cnt_map, pre, threshold)
     if use_gpu:
         network.to(device)
 
@@ -580,6 +590,9 @@ def natural_data():
         # evaluate performance on dev data
         # if epoch % 10 == 1:
         #     store_param(network, epoch, pos_alphabet, word_alphabet)
+        # if epoch % 20 == 1:
+        #     store_gaussians(network, word_alphabet, pos_alphabet, str(epoch), pw_cnt_map, pp_cnt_map, pre, threshold)
+
         network.eval()
         dev_corr = 0.0
         dev_total = 0
@@ -741,9 +754,160 @@ def detect_inter(cs_mu, cs_var, t_p_mu, t_p_var):
 
         store(f, "t_p_var:\n", t_p_var.grad.squeeze().cpu().data)
 
+
+def store_gaussians(network, word_alphabet, label_alphabet, epoch, pw_cnt_map, pp_cnt_map, pre='', threshold=2):
+    def store_gaussian(f, str1, str2, weight, mu, var, map):
+        key = str1 + '->' + str2
+        str1 += '->' + str2 + '\t' + str(weight) + '\t' + str(mu) + '\t' + str(var) + '\t' + str(map[key])
+        f.write(str1)
+        f.write('\n')
+
+    words = word_alphabet.instances
+    word_ins2idx = word_alphabet.instance2index
+
+    labels = label_alphabet.instances
+    label_ins2idx = label_alphabet.instance2index
+
+    gaussians_dict = dict()
+
+    with open(pre + "emission_" + epoch, 'w') as f:
+        weight = network.s_weight_em.weight.cpu().data.numpy()
+        mu = network.s_mu_em.weight.squeeze().cpu().data.numpy()
+        var = network.s_var_em.weight.squeeze().cpu().data.numpy()
+        for i in labels:
+            for j in words:
+                if i[0] == '_' or j[0] == '_':
+                    continue
+                if pw_cnt_map[i + '->' + j] < threshold:
+                    continue
+                if i not in gaussians_dict:
+                    gaussians_dict[i] = dict()
+                gaussians_dict[i][j] = tuple([mu[word_ins2idx[j], label_ins2idx[i]],
+                                              var[word_ins2idx[j], label_ins2idx[i]]])
+
+                store_gaussian(f, i, j, weight[word_ins2idx[j], label_ins2idx[i]],
+                               mu[word_ins2idx[j], label_ins2idx[i]],
+                               var[word_ins2idx[j], label_ins2idx[i]], pw_cnt_map)
+    gaussian_distance_mat(pre + 'gaussian_mat_' + epoch, gaussians_dict, method_type=0)
+    with open(pre + 'transition_' + epoch, 'w') as f:
+        weight = network.trans_weight.squeeze().cpu().data.numpy()
+        mu_p = network.trans_p_mu.squeeze().cpu().data.numpy()
+        var_p = network.trans_p_var.squeeze().cpu().data.numpy()
+        mu_c = network.trans_c_mu.squeeze().cpu().data.numpy()
+        var_c = network.trans_c_var.squeeze().cpu().data.numpy()
+
+        for i in labels:
+            for j in labels:
+                if i[0] == '_' or j[0] == '_':
+                    continue
+                if pp_cnt_map[i + '->' + j] < threshold:
+                    continue
+                store_gaussian(f, i, j, weight[label_ins2idx[i], label_ins2idx[j]],
+                               [mu_p[label_ins2idx[i], label_ins2idx[j]], mu_c[label_ins2idx[i], label_ins2idx[j]]],
+                               [var_p[label_ins2idx[i], label_ins2idx[j]], var_c[label_ins2idx[i], label_ins2idx[j]]],
+                               pp_cnt_map)
+
+
+def store_cnt(dataset, word_alphabet, pos_alphabet):
+    packs, pack_len = dataset
+    words = []
+    pos = []
+    length = []
+
+    for idx, lens in enumerate(pack_len):
+
+        if lens == 0:
+            continue
+        else:
+            tmp_word, _, tmp_pos, _, _, _, _, tmp_length = packs[idx]
+            words += tmp_word.data.cpu().numpy().tolist()
+            pos += tmp_pos.data.cpu().numpy().tolist()
+            length += tmp_length.data.cpu().numpy().tolist()
+
+    word_list = word_alphabet.instances
+    word_ins2idx = word_alphabet.instance2index
+    word_idx2ins = dict((v, k) for k, v in word_ins2idx.iteritems())
+    pos_list = pos_alphabet.instances
+    pos_ins2idx = pos_alphabet.instance2index
+    pos_idx2ins = dict((v, k) for k, v in pos_ins2idx.iteritems())
+    wp_cnt_map = dict()
+    pp_cnt_map = dict()
+    for i in word_list:
+        for j in pos_list:
+            if i[0] == '_' or j[0] == '_':
+                continue
+            key = j + '->' + i
+            wp_cnt_map[key] = 0
+    for sen in range(0, len(words)):
+        for idx in range(length[sen]):
+            word_idx = words[sen][idx]
+            pos_idx = pos[sen][idx]
+
+            if word_idx == 0 or pos_idx2ins[pos_idx][0] == '_' or word_idx2ins[word_idx][0] == '_':
+                continue
+            key = pos_idx2ins[pos_idx] + '->' + word_idx2ins[word_idx]
+            wp_cnt_map[key] += 1
+
+    for i in pos_list:
+        for j in pos_list:
+            if i[0] == '_' or j[0] == '_':
+                continue
+            key = j + '->' + i
+            pp_cnt_map[key] = 0
+
+    for sen in range(0, len(pos)):
+        for idx in range(1, length[sen]):
+            pre_idx = pos[sen][idx-1]
+            auf_idx = pos[sen][idx]
+
+            if pos_idx2ins[pre_idx] == '_' or pos_idx2ins[auf_idx] == '_':
+                continue
+            key = pos_idx2ins[pre_idx] + '->' + pos_idx2ins[auf_idx]
+            pp_cnt_map[key] += 1
+
+    return wp_cnt_map, pp_cnt_map
+
+
+def gaussian_distance_mat(filename, gaussians_dict, method_type=0):
+
+    def expection_distance(gaussian1, gaussian2):
+        mu1, var1 = gaussian1
+        mu2, var2 = gaussian2
+        var1_square = math.exp(2.0 * var1)
+        var2_square = math.exp(2.0 * var2)
+        var_square_add = var1_square + var2_square
+        var_log_square_add = math.log(var_square_add)
+
+        scale = -0.5 * (math.log(math.pi * 2) + var_log_square_add + math.pow(mu1 - mu2, 2.0) / var_square_add)
+        if scale < -50:
+            print("Something Error")
+        return scale
+
+    def kl_distance(gaussian1, gaussian2):
+        # todo
+        pass
+    method = {0: expection_distance,
+              1: kl_distance}
+
+    for k, v in gaussians_dict.iteritems():
+        with open(filename + '_' + k, 'w') as f:
+            key_list = v.keys()
+            words = ''
+            for word in key_list:
+                words += word + '\t'
+            f.write(words)
+            f.write('\n')
+            for i in key_list:
+                for j in key_list:
+                    f.write('%.4f' % method[method_type](v[i], v[j]))
+                    f.write('\t')
+                f.write('\n')
+
+
+
+
 if __name__ == '__main__':
     torch.random.manual_seed(480)
     np.random.seed(480)
     natural_data()
     # main()
-

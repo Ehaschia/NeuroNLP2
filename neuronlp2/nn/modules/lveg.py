@@ -14,7 +14,7 @@ class ChainLVeG(nn.Module):
     Implement 1 component mixture gaussian
     """
     def __init__(self, input_size, num_labels, bigram=True, spherical=False,
-                 t_comp=1, e_comp=1, gaussian_dim=1):
+                 t_comp=1, e_comp=1, gaussian_dim=1, clip=1):
         """
 
         Args:
@@ -36,8 +36,8 @@ class ChainLVeG(nn.Module):
         self.bigram = bigram
         self.spherical = spherical
         self.gaussian_dim = gaussian_dim
-        self.min_clip = -5.0
-        self.max_clip = 5.0
+        self.min_clip = -clip
+        self.max_clip = clip
         self.t_comp = t_comp
         self.e_comp = e_comp
         # Gaussian for every emission rule
@@ -137,6 +137,7 @@ class ChainLVeG(nn.Module):
         # if the s_var is spherical it should be [batch, length, 1, 1]
 
         # s_weight shape [batch, length, num_label]
+
         s_weight = self.state_nn_weight(input).view(batch, length, 1, self.num_labels, 1, self.e_comp)
 
         s_mu = self.state_nn_mu(input).view(batch, length, 1, self.num_labels, 1, self.e_comp, self.gaussian_dim)
@@ -186,6 +187,12 @@ class ChainLVeG(nn.Module):
         # mu of N` is (mu1*sigma2^2 + mu2^sigma1^2)/(sigma1^2 + sigma2^2)
         # var of N` is log(sigma1) + log(sigma2) - (1/2)*log(sigma1^2 + sigma2^2)
 
+        # s_mu_numpy = s_mu.data.squeeze().cpu().numpy()
+        # s_var_numpy = s_var.data.squeeze().cpu().numpy()
+        # t_p_mu_numpy = t_p_mu.data.squeeze().cpu().numpy()
+        # t_p_var_numpy = t_p_var.data.squeeze().cpu().numpy()
+        # t_c_mu_numpy = t_c_mu.data.squeeze().cpu().numpy()
+        # t_c_var_numpy = t_c_var.data.squeeze().cpu().numpy()
 
         s_mu = torch.clamp(s_mu, min=self.min_clip, max=self.max_clip)
         s_var = torch.clamp(s_var, min=self.min_clip, max=self.max_clip)
@@ -203,6 +210,9 @@ class ChainLVeG(nn.Module):
         # check_numerics(t_c_var)
 
         # the tensor now not add weight
+
+        # self.save_parameter(s_weight, s_mu, s_var, t_weight, t_p_mu, t_p_var, t_c_mu, t_c_var, input)
+
         def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
             n1_var_square = torch.exp(2.0 * n1_var)
             n2_var_square = torch.exp(2.0 * n2_var)
@@ -243,7 +253,19 @@ class ChainLVeG(nn.Module):
                                                                                                      self.t_comp)), dim=1)
         if mask is not None:
             output = output * mask.view(batch, length, 1, 1, 1, 1, 1, 1)
-        return output
+        # s_weight.retain_grad()
+        # s_mu.retain_grad()
+        # s_var.retain_grad()
+        # t_weight.retain_grad()
+        # t_p_mu.retain_grad()
+        # t_p_var.retain_grad()
+        # t_c_var.retain_grad()
+        # t_c_mu.retain_grad()
+        # cs_scale.retain_grad()
+        # csp_scale.retain_grad()
+
+        return output # , (s_weight, s_mu, s_var, t_weight, t_p_mu, t_p_var, t_c_mu, t_c_var, cs_scale, cs_mu, cs_var,
+                      #   csp_scale, s_mu_numpy, s_var_numpy, t_p_mu_numpy, t_p_var_numpy, t_c_mu_numpy, t_c_var_numpy)
 
     def loss(self, input, target, mask=None):
         """
@@ -261,6 +283,7 @@ class ChainLVeG(nn.Module):
         """
         batch, length, _ = input.size()
         energy = self.forward(input, mask=mask)
+        # energy.retain_grad()
         # shape = [length, batch, num_label, num_label, num_label]
         energy_transpose = energy.transpose(0, 1)
         # shape = [length, batch]
@@ -318,8 +341,8 @@ class ChainLVeG(nn.Module):
                 tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
             prev_label = target_transpose[t]
         partition = partition.mean(dim=2)
-        loss = logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)
-        return loss.mean()
+        loss = (logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)).mean()
+        return loss #, (energy, to_store)
 
     def decode(self, input, mask=None, leading_symbolic=0):
         """
@@ -410,3 +433,27 @@ class ChainLVeG(nn.Module):
             back_pointer[t] = pointer_last[batch_index, back_pointer[t + 1]]
 
         return back_pointer.transpose(0, 1) + leading_symbolic
+
+    def save_parameter(self, s_weight, s_mu, s_var, t_weight, t_p_mu, t_p_var, t_c_mu, t_c_var, input):
+
+        def precision(tensor):
+            return np.array2string(tensor.numpy(), precision=2, separator=',', suppress_small=True, threshold=int(1e8))
+
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/s_weight", 'w') as f:
+            f.write(precision(s_weight.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/s_mu", 'w') as f:
+            f.write(precision(s_mu.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/s_var", 'w') as f:
+            f.write(precision(s_var.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/t_weight", 'w') as f:
+            f.write(precision(t_weight.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/t_p_mu", 'w') as f:
+            f.write(precision(t_p_mu.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/t_p_var", 'w') as f:
+            f.write(precision(t_p_var.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/t_c_mu", 'w') as f:
+            f.write(precision(t_c_mu.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/t_c_var", 'w') as f:
+            f.write(precision(t_c_var.squeeze().data.cpu()))
+        with open("/home/zhaoyp/zlw/pos/2neuronlp/input", 'w') as f:
+            f.write(precision(input.squeeze().data.cpu()))
