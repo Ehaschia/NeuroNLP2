@@ -3,7 +3,7 @@ __author__ = 'max'
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..nn import ChainCRF, VarMaskedGRU, VarMaskedRNN, VarMaskedLSTM
+from ..nn import ChainCRF, VarMaskedGRU, VarMaskedRNN, VarMaskedLSTM, ChainLVeG
 # from ..nn import Embedding
 from ..nn import utils
 import numpy as np
@@ -242,3 +242,55 @@ class BiRecurrentConvCRF(BiRecurrentConv):
         else:
             return preds, (torch.eq(preds, target.data).float() * mask.data).sum()
 
+class BiRecurrentConvLVeG(BiRecurrentConv):
+    def __init__(self, word_dim, num_words, char_dim, num_chars, num_filters, kernel_size, rnn_mode, hidden_size,
+                 num_layers, num_labels, tag_space=0, embedd_word=None, embedd_char=None, p_in=0.33,
+                 p_rnn=0.5, bigram=False, spherical=False, t_comp=1, e_comp=1, gaussian_dim=1,
+                 clip=1.0):
+        super(BiRecurrentConvLVeG, self).__init__(word_dim, num_words, char_dim, num_chars, num_filters, kernel_size,
+                                                  rnn_mode, hidden_size, num_layers, num_labels,
+                                                  tag_space=tag_space, embedd_word=embedd_word, embedd_char=embedd_char,
+                                                  p_in=p_in, p_rnn=p_rnn)
+
+        out_dim = tag_space if tag_space else hidden_size * 2
+        self.lveg = ChainLVeG(out_dim, num_labels, bigram=bigram, spherical=spherical,
+                              t_comp=t_comp, e_comp=e_comp, gaussian_dim=gaussian_dim, clip=clip)
+        self.dense_softmax = None
+        self.logsoftmax = None
+        self.nll_loss = None
+
+    def forward(self, input_word, input_char, mask=None, length=None, hx=None):
+        # output from rnn [batch, length, tag_space]
+        output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=length, hx=hx)
+        # output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=None, hx=hx)
+
+        # [batch, length, num_label,  num_label]
+        return self.lveg(output, mask=mask), mask
+
+    def loss(self, input_word, input_char, target, mask=None, length=None, hx=None, leading_symbolic=0):
+        # output from rnn [batch, length, tag_space]
+        output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=length, hx=hx)
+
+        if length is not None:
+            max_len = length.max()
+            target = target[:, :max_len]
+
+        # [batch, length, num_label,  num_label]
+        return self.lveg.loss(output, target, mask=mask)
+
+    def decode(self, input_word, input_char, target=None, mask=None, length=None, hx=None, leading_symbolic=0):
+        # output from rnn [batch, length, tag_space]
+        output, _, mask, length = self._get_rnn_output(input_word, input_char, mask=mask, length=length, hx=hx)
+
+        if target is None:
+            return self.lveg.decode(output, mask=mask, leading_symbolic=leading_symbolic), None
+
+        if length is not None:
+            max_len = length.max()
+            target = target[:, :max_len]
+
+        preds = self.lveg.decode(output, mask=mask, leading_symbolic=leading_symbolic)
+        if mask is None:
+            return preds, torch.eq(preds, target.data).float().sum()
+        else:
+            return preds, (torch.eq(preds, target.data).float() * mask.data).sum()

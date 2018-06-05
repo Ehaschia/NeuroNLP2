@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch.optim import Adam, SGD
 from neuronlp2.io import get_logger, conllx_data
-from neuronlp2.models import BiRecurrentConvCRF
+from neuronlp2.models import BiRecurrentConvCRF, BiRecurrentConvLVeG
 from neuronlp2 import utils
 
 
@@ -37,11 +37,21 @@ def main():
     parser.add_argument('--bigram', action='store_true', help='bi-gram parameter for CRF')
     parser.add_argument('--schedule', type=int, help='schedule for learning rate decay')
     parser.add_argument('--unk_replace', type=float, default=0., help='The rate to replace a singleton word with UNK')
-    parser.add_argument('--embedding', choices=['glove', 'senna', 'sskip', 'polyglot'], help='Embedding for words', required=True)
+    parser.add_argument('--embedding', choices=['glove', 'senna', 'sskip', 'polyglot', 'random'], help='Embedding for words', required=True)
     parser.add_argument('--embedding_dict', help='path for embedding dict')
     parser.add_argument('--train')  # "data/POS-penn/wsj/split1/wsj1.train.original"
     parser.add_argument('--dev')  # "data/POS-penn/wsj/split1/wsj1.dev.original"
     parser.add_argument('--test')  # "data/POS-penn/wsj/split1/wsj1.test.original"
+    parser.add_argument('--dim', type=int, default=100)
+    parser.add_argument('--lveg', default=False, action='store_true')
+    parser.add_argument('--language', type=str, default='wsj')
+    parser.add_argument('--spherical', default=False, action='store_true')
+    parser.add_argument('--gaussian-dim', type=int, default=1)
+    parser.add_argument('--t-comp', type=int, default=1)
+    parser.add_argument('--e-comp', type=int, default=1)
+    parser.add_argument('--use-tensorboard', default=False, action='store_true')
+    parser.add_argument('--log-dir', type=str, default='./tensorboard/')
+    parser.add_argument('--lveg-clip', type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -66,13 +76,16 @@ def main():
 
     embedding = args.embedding
     embedding_path = args.embedding_dict
-
-    embedd_dict, embedd_dim = utils.load_embedding_dict(embedding, embedding_path)
-
+    if embedding == 'random':
+        embedd_dim = args.dim
+        embedd_dict = None
+    else:
+        embedd_dict, embedd_dim = utils.load_embedding_dict(embedding, embedding_path)
+    # embedd_dim = 100
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/", train_path,
-                                                 data_paths=[dev_path, test_path],
+    type_alphabet = conllx_data.create_alphabets("data/alphabets/pos_crf/" + args.language + '/',
+                                                 train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=embedd_dict)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
@@ -100,14 +113,17 @@ def main():
         table[conllx_data.UNK_ID, :] = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
         oov = 0
         for word, index in word_alphabet.items():
-            if word in embedd_dict:
-                embedding = embedd_dict[word]
-            elif word.lower() in embedd_dict:
-                embedding = embedd_dict[word.lower()]
+            if embedding == 'random':
+                a_embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
             else:
-                embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
-                oov += 1
-            table[index, :] = embedding
+                if word in embedd_dict:
+                    a_embedding = embedd_dict[word]
+                elif word.lower() in embedd_dict:
+                    a_embedding = embedd_dict[word.lower()]
+                else:
+                    a_embedding = np.random.uniform(-scale, scale, [1, embedd_dim]).astype(np.float32)
+                    oov += 1
+            table[index, :] = a_embedding
         print('oov: %d' % oov)
         return torch.from_numpy(table)
 
@@ -118,13 +134,20 @@ def main():
     window = 3
     num_layers = 1
     if args.dropout == 'std':
-        network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(),
-                                     char_dim, char_alphabet.size(),
-                                     num_filters, window,
-                                     mode, hidden_size, num_layers, num_labels,
-                                     embedd_word=word_table, p_rnn=p, bigram=bigram)
+        if args.lveg:
+            network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
+                                          window, mode, hidden_size, num_layers, num_labels,
+                                          embedd_word=word_table, bigram=bigram,
+                                          p_rnn=p, t_comp=args.t_comp,
+                                          e_comp=args.e_comp, gaussian_dim=args.gaussian_dim)
+        else:
+            network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
+                                         window, mode, hidden_size, num_layers, num_labels,
+                                         embedd_word=word_table, bigram=bigram, p_rnn=p)
     else:
-        raise NotImplementedError
+        NotImplementedError
+    network_name = type(network).__name__
+    logger.info("Bulid network:" + network_name)
 
     if use_gpu:
         network.cuda()
