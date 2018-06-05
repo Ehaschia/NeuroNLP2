@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ..nn import ChainCRF, VarMaskedGRU, VarMaskedRNN, VarMaskedLSTM
-from ..nn import Embedding
+# from ..nn import Embedding
 from ..nn import utils
+import numpy as np
 
 
 class BiRecurrentConv(nn.Module):
@@ -14,8 +15,10 @@ class BiRecurrentConv(nn.Module):
                  embedd_word=None, embedd_char=None, p_in=0.2, p_rnn=0.5):
         super(BiRecurrentConv, self).__init__()
 
-        self.word_embedd = Embedding(num_words, word_dim, init_embedding=embedd_word)
-        self.char_embedd = Embedding(num_chars, char_dim, init_embedding=embedd_char)
+        self.word_embedd = nn.Embedding(num_words, word_dim)
+        self.reset_embedding(embedd_word, self.word_embedd, word_dim)
+        self.char_embedd = nn.Embedding(num_chars, char_dim)
+        self.reset_embedding(embedd_char, self.char_embedd, char_dim)
         self.conv1d = nn.Conv1d(char_dim, num_filters, kernel_size, padding=kernel_size - 1)
         self.dropout_in = nn.Dropout(p=p_in)
         self.dropout_rnn = nn.Dropout(p_rnn)
@@ -40,6 +43,26 @@ class BiRecurrentConv(nn.Module):
         self.dense_softmax = nn.Linear(out_dim, num_labels)
         self.logsoftmax = nn.LogSoftmax(dim=1)
         self.nll_loss = nn.NLLLoss(size_average=False, reduce=False)
+
+    #     self.initializer = initializer
+    #     self.reset_parameters()
+    #
+    # def reset_parameters(self):
+    #     if self.initializer is None:
+    #         return
+    #
+    #     for name, parameter in self.named_parameters():
+    #         if name.find('embedd') == -1:
+    #             if parameter.dim() == 1:
+    #                 parameter.data.zero_()
+    #             else:
+    #                 self.initializer(parameter.data)
+    def reset_embedding(self, init_embedding, embedding_layer, embedding_dim):
+        if init_embedding is None:
+            scale = np.sqrt(3.0 / embedding_dim)
+            embedding_layer.weight.data.uniform_(-scale, scale)
+        else:
+            embedding_layer.weight = nn.Parameter(init_embedding)
 
     def _get_rnn_output(self, input_word, input_char, mask=None, length=None, hx=None):
         # hack length from mask
