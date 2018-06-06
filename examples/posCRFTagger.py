@@ -233,10 +233,12 @@ def main():
                 test_corr += corr
                 test_total += num_tokens
             test_correct = test_corr
-        print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-            dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
-        print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
-            test_correct, test_total, test_correct * 100 / test_total, best_epoch))
+        if dev_total != 0:
+            print("best dev  corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+                dev_correct, dev_total, dev_correct * 100 / dev_total, best_epoch))
+        if test_total != 0:
+            print("best test corr: %d, total: %d, acc: %.2f%% (epoch: %d)" % (
+                test_correct, test_total, test_correct * 100 / test_total, best_epoch))
 
         if epoch % schedule == 0:
             lr = learning_rate / (1.0 + epoch * decay_rate)
@@ -244,4 +246,6 @@ def main():
 
 
 if __name__ == '__main__':
+    torch.manual_seed(48)
+    np.random.seed(48)
     main()

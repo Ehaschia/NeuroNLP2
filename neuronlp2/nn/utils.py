@@ -3,6 +3,7 @@ from itertools import repeat
 import torch
 import torch.nn.utils.rnn as rnn_utils
 from torch.autograd import Variable
+import numpy as np
 
 
 def _ntuple(n):

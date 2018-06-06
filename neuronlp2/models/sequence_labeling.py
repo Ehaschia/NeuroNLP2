@@ -69,7 +69,7 @@ class BiRecurrentConv(nn.Module):
         # we do not hack mask from length for special reasons.
         # Thus, always provide mask if it is necessary.
         if length is None and mask is not None:
-            length = mask.data.sum(dim=1).long()
+            length = mask.data.sum(dim=1).long() + 1
 
         # [batch, length, word_dim]
         word = self.word_embedd(input_word)
