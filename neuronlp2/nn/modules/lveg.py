@@ -457,3 +457,258 @@ class ChainLVeG(nn.Module):
             f.write(precision(t_c_var.squeeze().data.cpu()))
         with open("/home/zhaoyp/zlw/pos/2neuronlp/input", 'w') as f:
             f.write(precision(input.squeeze().data.cpu()))
+
+class GeneralLVeG(nn.Module):
+    def __init__(self, input_size, num_labels, bigram=True, spherical=False,
+                 t_comp=1, e_comp=1, gaussian_dim=1, clip=1):
+        """
+
+        Args:
+            input_size: int
+                the dimension of the input.
+            num_labels: int
+                the number of labels of the crf layer
+            bigram: bool
+                if apply bi-gram parameter.
+            spherical: bool
+                if apply spherical gaussian
+            gaussian_dim: int
+                the dimension of gaussian
+        """
+        super(GeneralLVeG, self).__init__()
+        self.input_size = input_size
+        self.num_labels = num_labels + 1
+        self.pad_label_id = num_labels
+        self.bigram = bigram
+        self.spherical = spherical
+        self.gaussian_dim = gaussian_dim
+        self.min_clip = -clip
+        self.max_clip = clip
+        self.t_comp = t_comp
+        self.e_comp = e_comp
+        # Gaussian for every emission rule
+        # weight is log form
+        # alert because need to calculate the inverse of variance, so variance should be in normal form.
+        self.state_nn_weight = nn.Linear(self.input_size, self.num_labels*self.e_comp)
+        # every label  is a gaussian_dim dimension gaussian
+        self.state_nn_mu = nn.Linear(self.input_size, self.num_labels*self.gaussian_dim*self.gaussian_dim*self.e_comp)
+        # fixme rewrite var, let it be symmetric positive definite matrix
+        self.state_nn_var = nn.Linear(self.input_size, self.num_labels*self.gaussian_dim*self.gaussian_dim*self.e_comp)
+        # weight and var is log form
+        if self.bigram:
+            self.trans_nn_weight = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp)
+            self.trans_nn_mu = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*2*self.gaussian_dim*2*self.gaussian_dim)
+            # fixme rewrite var, let it be symmetric positive definite matrix
+            self.trans_nn_var = nn.Linear(self.input_size, self.num_labels*self.num_labels*self.t_comp*2*self.gaussian_dim*2*self.gaussian_dim)
+
+            self.register_parameter("trans_mat_weight", None)
+            self.register_parameter("trans_mat_mu", None)
+            self.register_parameter("trans_mat_var", None)
+
+        else:
+            self.trans_nn_weight = None
+            self.trans_nn_p_mu = None
+            self.trans_nn_c_mu = None
+            self.trans_nn_p_var = None
+            self.trans_nn_c_var = None
+
+            self.trans_mat_weight = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp))
+            self.trans_mat_mu = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, self.gaussian_dim, self.gaussian_dim))
+            # fixme rewrite var, let it be symmetric positive definite matrix
+            self.trans_mat_var = Parameter(torch.Tensor(self.num_labels, self.num_labels, self.t_comp, 2*self.gaussian_dim, 2*gaussian_dim))
+        self.reset_parameter()
+
+    def reset_parameter(self):
+        nn.init.constant_(self.state_nn_weight.bias, 0)
+        nn.init.constant_(self.state_nn_mu.bias, 0)
+        nn.init.constant_(self.state_nn_var.bias, 0)
+        if self.bigram:
+            nn.init.xavier_normal_(self.trans_nn_weight.weight)
+            nn.init.xavier_normal_(self.trans_nn_mu.weight)
+            nn.init.xavier_normal_(self.trans_nn_var.weight)
+            nn.init.constant_(self.trans_nn_weight.bias, 0)
+            nn.init.constant_(self.trans_nn_p_mu.bias, 0)
+            nn.init.constant_(self.trans_nn_p_var.bias, 0)
+        else:
+            nn.init.normal_(self.trans_mat_weight)
+            nn.init.normal_(self.trans_mat_mu)
+            nn.init.normal_(self.trans_mat_var)
+
+    def inverse(self, input):
+        # alert the inverse is for normal format
+        # implement 1 dim and 2 dim
+        epslion = 0.0
+        size = input.size()
+        if size[-1] != size[-2]:
+            raise ValueError('To inverse matrix should be square.')
+        if size[-1] == 1:
+            return 1.0 / (input + epslion)
+            # return -1.0 * input
+
+        input = input.view(-1, size[-2], size[-1])
+        if size[-1] == 2:
+            # http://www.mathcentre.ac.uk/resources/uploaded/sigma-matrices7-2009-1.pdf
+            scale = 1.0 / (input[:, 0, 0] * input[:, 1, 1] - input[:, 0, 1] * input[:, 1, 0] + epslion)
+            # denoinator
+            # deno = scale.view(scale.size() + (1, 1))
+            inv_00 = (input[:, 1, 1] * scale).view(input.size()[0], 1)
+            inv_01 = (- input[:, 1, 0] * scale).view(input.size()[0], 1)
+            inv_10 = (- input[:, 0, 1] * scale).view(input.size()[0], 1)
+            inv_11 = (input[:, 0, 0] * scale).view(input.size()[0], 1)
+
+            inv = torch.cat((inv_00, inv_01, inv_10, inv_11), dim=1)
+            return inv.view(size)
+        else:
+            raise NotImplementedError
+    def log_inverse(self, input):
+        return torch.log(self.inverse(torch.exp(input)))
+
+    def determinate(self, input):
+        epslion = 1e-5
+        size = input.size()
+        if size[-1] != size[-2]:
+            raise NotImplementedError('Not square matrix determinate is not implement')
+        if size[-1] == 1:
+            return input
+            # return -1.0 * input
+
+        input = input.view(-1, size[-2], size[-1])
+        if size[-1] == 2:
+            # http://www.mathcentre.ac.uk/resources/uploaded/sigma-matrices7-2009-1.pdf
+            det = input[:, 0, 0] * input[:, 1, 1] - input[:, 0, 1] * input[:, 1, 0]
+            return det.view(size[:-2])
+        else:
+            raise NotImplementedError
+
+    def forward(self, input, mask=None):
+
+        batch, length, _ = input.size()
+
+        # compute out_weight, out_mu, out_var by tensor dot
+        #
+        # [batch, length, input_size] * [input_size, num_label*gaussian_dim]
+        #
+        # thus weight should be [batch, length, num_label*gaussian_dim] --> [batch, length, num_label, 1]
+        #
+        # the mu and var tensor should be [batch, length, num_label*gaussian_dim] -->
+        # [batch, length, num_label, 1, gaussian_dim]
+        #
+        # if the s_var is spherical it should be [batch, length, 1, 1]
+
+        # s_weight shape [batch, length, num_label]
+
+        s_weight = self.state_nn_weight(input).view(batch, length, self.num_labels, self.e_comp).transpose(0, 1)
+
+        s_mu = self.state_nn_mu(input).view(batch, length, self.num_labels, self.e_comp, self.gaussian_dim).transpose(0, 1)
+        # s_mu = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
+        s_var = self.state_nn_var(input).view(batch, length, self.num_labels, self.e_comp, self.gaussian_dim, self.gaussian_dim).transpose(0, 1)
+
+        # s_var = Variable(torch.zeros(batch, length, self.num_labels, self.gaussian_dim)).cuda()
+        # t_weight size [batch, length, num_label, num_label]
+        # mu and var size [batch, length, num_label, num_label, gaussian_dim]
+
+        if self.bigram:
+            t_weight = self.trans_nn_weight(input).view(batch, length, self.num_labels, self.num_labels, self.t_comp).transpose(0, 1)
+            t_mu = self.trans_nn_p_mu(input).view(batch, length, self.num_labels, self.num_labels,
+                                                  self.t_comp, 2*self.gaussian_dim).transpose(0, 1)
+            t_var = self.trans_nn_p_var(input).view(batch, length, self.num_labels, self.num_labels,
+                                                    self.t_comp, 2*self.gaussian_dim, 2*self.gaussian_dim).transpose(0, 1)
+        else:
+            t_weight = self.trans_mat_weight.view(1, self.num_labels, self.num_labels, self.t_comp)
+            t_mu = self.trans_mat_p_mu.view(1, self.num_labels, self.num_labels, self.t_comp, 2*self.gaussian_dim)
+            t_var = self.trans_mat_p_var.view(1, self.num_labels, self.num_labels, self.t_comp, 2*self.gaussian_dim, 2*self.gaussian_dim)
+
+        # multiply
+        # n1 is the big.
+        def general_gaussian_multi(n1_mu, n1_var, n2_mu, n2_var, child):
+
+            def zeta(l, eta, v=None):
+                if v is None:
+                    v = self.inverse(l)
+                dim = l.size()[-1]
+                bmm_size = l.size()
+                # can optimize
+                scale = -0.5*(2*dim*math.log(math.pi) - torch.log(self.determinate(l)) + torch.bmm(torch.bmm(eta.view(-1, 1, dim), v.view(-1, dim, dim)), eta.view(-1, dim, 1)).view(bmm_size[:-2]))
+                return scale
+            n1_var = n1_var.view(n1_var.size()[:-2] + (-1, ))
+            dim =  self.gaussian_dim
+            n1_mu_0, n1_mu_1 = torch.split(n1_mu, [dim, dim], dim=-1)
+
+            # alert matrix multiply
+            # here V = (Lambda_22 - Lambda_12^T (Lambda_11 + lambda)^-1 Lambda_12)^-1
+            # lambda is inverse of V
+            l1 = self.inverse(n1_var)
+            l1_00, l1_01, l1_10, l1_11 = torch.split(n1_var, [dim, dim, dim, dim], dim=-1)
+            l2 = self.inverse(n2_var)
+            # alert format : only support 3d
+            bmm_size = l1.size()
+            eta1 = torch.bmm(l1.vew(-1, bmm_size[-2], bmm_size[-1]), n1_mu.view(-1, l1[-1], 1))
+            eta1_0, eta1_1 = torch.split(eta1.view(bmm_size[:-1]), [dim, dim], dim=-1)
+            bmm_size = l1.size()
+            eta2 = torch.bmm(l2.vew(-1, bmm_size[-2], bmm_size[-1]), n2_mu.view(-1, l1[-1], 1))
+            zeta1 = zeta(l1, eta1, v=n1_var)
+            zeta2 = zeta(l2, eta2, v=n2_var)
+
+            if child:
+                mu_size = n2_mu.size()
+                var_size = n2_var.size()
+                la_part = torch.bmm(l1_10, self.inverse(l1_11 + l2))
+                la_new = l1_00 - torch.bmm(la_part, l1_01).view(var_size)
+                var_new = self.inverse(la_new)
+                # here eta format is compress
+                eta_new = eta1_0 - torch.bmm(la_part, eta1_1+eta1)
+                mu_new = torch.bmm(var_new, eta_new).view(mu_size)
+                zeta_merge = zeta(l1_11 + l2, eta1_1 + eta2)
+                zeta_new = zeta(la_new, eta_new, var_new)
+
+            else:
+                mu_size = n2_mu.size()
+                var_size = n2_var.size()
+                la_part = torch.bmm(l1_10, self.inverse(l1_00 + l2))
+                la_new = l1_11 - torch.bmm(la_part, l1_01).view(var_size)
+                var_new = self.inverse(la_new)
+                # here eta format is compress
+                eta_new = eta1_1 - torch.bmm(la_part, eta1_0+eta1)
+                mu_new = torch.bmm(var_new, eta_new).view(mu_size)
+                zeta_merge = zeta(l1_00 + l2, eta1_0 + eta2)
+                zeta_new = zeta(la_new, eta_new, var_new)
+            # alert shape
+            scale = zeta1 + zeta2 - zeta_merge - zeta_new
+            return scale, mu_new, var_new
+
+        def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
+            # alert here is log formart
+            n1_var_square = torch.exp(2.0 * n1_var)
+            n2_var_square = torch.exp(2.0 * n2_var)
+            var_square_add = n1_var_square + n2_var_square
+            var_log_square_add = torch.log(var_square_add)
+
+            scale = -0.5 * (math.log(math.pi * 2) + var_log_square_add + torch.pow(n1_mu - n2_mu, 2.0) / var_square_add)
+
+            mu = (n1_mu * n2_var_square + n2_mu * n1_var_square) / var_square_add
+
+            var = n1_var + n2_var - 0.5 * var_log_square_add
+            scale = torch.sum(scale, dim=-1)
+            return scale, mu, var
+
+        output = []
+        mu_p = None
+        var_p = None
+        for i in range(length):
+            if i == 0:
+                scale_c, mu_c, var_c = general_gaussian_multi(t_mu[i], t_var[i], s_mu[i], s_var[i], True)
+                scale_p, mu_p, var_p = general_gaussian_multi(t_mu[i+1], t_var[i+1], mu_c, var_c, False)
+            else:
+                scale_c, mu_c, var_c = gaussian_multi(mu_p, var_p, s_mu[i], s_var[i])
+                scale_p, mu_p, var_p = general_gaussian_multi(t_mu[i], t_var[i], mu_c, var_c, False)
+            scale = scale_c + scale_p
+            if self.bigram:
+                scale += t_weight[i] + s_weight
+            else:
+                scale += t_weight + s_weight
+            output.append(scale.view((1, ) + scale.size()))
+        output = torch.cat(tuple(output), dim=0)
+
+        if mask is not None:
+            output = output * mask
+        return output
