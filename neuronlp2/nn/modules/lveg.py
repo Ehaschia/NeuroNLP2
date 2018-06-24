@@ -621,31 +621,37 @@ class GeneralLVeG(nn.Module):
         # multiply
         # n1 is the big.
         def general_gaussian_multi(n1_mu, n1_var, n2_mu, n2_var, child):
-
+            # var size: last 2 dim should be equal
             def zeta(l, eta, v=None):
                 if v is None:
                     v = self.inverse(l)
                 dim = l.size()[-1]
                 bmm_size = l.size()
                 # can optimize
-                scale = -0.5*(2*dim*math.log(math.pi) - torch.log(self.determinate(l)) + torch.bmm(torch.bmm(eta.view(-1, 1, dim), v.view(-1, dim, dim)), eta.view(-1, dim, 1)).view(bmm_size[:-2]))
+                # Alert the scale is log format
+                scale = -0.5 * (dim * math.log(2 * math.pi) - torch.log(self.determinate(l)) + torch.bmm(
+                    torch.bmm(eta.view(-1, 1, dim), v.view(-1, dim, dim)), eta.view(-1, dim, 1)).view(bmm_size[:-2]))
                 return scale
-            n1_var = n1_var.view(n1_var.size()[:-2] + (-1, ))
-            dim =  self.gaussian_dim
-            n1_mu_0, n1_mu_1 = torch.split(n1_mu, [dim, dim], dim=-1)
+
+            # n1_var = n1_var.view(n1_var.size()[:-2] + (-1,))
+            dim = 1
 
             # alert matrix multiply
             # here V = (Lambda_22 - Lambda_12^T (Lambda_11 + lambda)^-1 Lambda_12)^-1
             # lambda is inverse of V
             l1 = self.inverse(n1_var)
-            l1_00, l1_01, l1_10, l1_11 = torch.split(n1_var, [dim, dim, dim, dim], dim=-1)
+            l1_00, l1_01, l1_10, l1_11 = torch.split(l1.view(l1.size()[:-2] + (-1,)), [dim, dim, dim, dim], dim=-1)
+            l1_00 = l1_00.view(l1_00.size() + (1, 1))
+            l1_01 = l1_01.view(l1_01.size() + (1, 1))
+            l1_10 = l1_10.view(l1_10.size() + (1, 1))
+            l1_11 = l1_11.view(l1_11.size() + (1, 1))
             l2 = self.inverse(n2_var)
             # alert format : only support 3d
             bmm_size = l1.size()
-            eta1 = torch.bmm(l1.vew(-1, bmm_size[-2], bmm_size[-1]), n1_mu.view(-1, l1[-1], 1))
+            eta1 = torch.bmm(l1.view(-1, bmm_size[-2], bmm_size[-1]), n1_mu.view(-1, bmm_size[-1], 1)).squeeze(-1)
             eta1_0, eta1_1 = torch.split(eta1.view(bmm_size[:-1]), [dim, dim], dim=-1)
-            bmm_size = l1.size()
-            eta2 = torch.bmm(l2.vew(-1, bmm_size[-2], bmm_size[-1]), n2_mu.view(-1, l1[-1], 1))
+            bmm_size = l2.size()
+            eta2 = torch.bmm(l2.view(-1, bmm_size[-2], bmm_size[-1]), n2_mu.view(-1, bmm_size[-1], 1)).squeeze(-1)
             zeta1 = zeta(l1, eta1, v=n1_var)
             zeta2 = zeta(l2, eta2, v=n2_var)
 
@@ -656,7 +662,7 @@ class GeneralLVeG(nn.Module):
                 la_new = l1_00 - torch.bmm(la_part, l1_01).view(var_size)
                 var_new = self.inverse(la_new)
                 # here eta format is compress
-                eta_new = eta1_0 - torch.bmm(la_part, eta1_1+eta1)
+                eta_new = eta1_0 - torch.bmm(la_part, (eta1_1 + eta2).unsqueeze(-1))
                 mu_new = torch.bmm(var_new, eta_new).view(mu_size)
                 zeta_merge = zeta(l1_11 + l2, eta1_1 + eta2)
                 zeta_new = zeta(la_new, eta_new, var_new)
@@ -668,7 +674,7 @@ class GeneralLVeG(nn.Module):
                 la_new = l1_11 - torch.bmm(la_part, l1_01).view(var_size)
                 var_new = self.inverse(la_new)
                 # here eta format is compress
-                eta_new = eta1_1 - torch.bmm(la_part, eta1_0+eta1)
+                eta_new = eta1_1 - torch.bmm(la_part, (eta1_0 + eta2).unsqueeze(-1))
                 mu_new = torch.bmm(var_new, eta_new).view(mu_size)
                 zeta_merge = zeta(l1_00 + l2, eta1_0 + eta2)
                 zeta_new = zeta(la_new, eta_new, var_new)
@@ -677,15 +683,12 @@ class GeneralLVeG(nn.Module):
             return scale, mu_new, var_new
 
         def gaussian_multi(n1_mu, n1_var, n2_mu, n2_var):
-            # alert here is log formart
-            n1_var_square = torch.exp(2.0 * n1_var)
-            n2_var_square = torch.exp(2.0 * n2_var)
-            var_square_add = n1_var_square + n2_var_square
+            var_square_add = n1_var + n2_var
             var_log_square_add = torch.log(var_square_add)
 
             scale = -0.5 * (math.log(math.pi * 2) + var_log_square_add + torch.pow(n1_mu - n2_mu, 2.0) / var_square_add)
 
-            mu = (n1_mu * n2_var_square + n2_mu * n1_var_square) / var_square_add
+            mu = (n1_mu * n2_var + n2_mu * n1_var) / var_square_add
 
             var = n1_var + n2_var - 0.5 * var_log_square_add
             scale = torch.sum(scale, dim=-1)

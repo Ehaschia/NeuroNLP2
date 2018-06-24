@@ -33,7 +33,11 @@ def main():
     parser.add_argument('--decay_rate', type=float, default=0.1, help='Decay rate of learning rate')
     parser.add_argument('--gamma', type=float, default=0.0, help='weight for regularization')
     parser.add_argument('--dropout', choices=['std', 'variational'], help='type of dropout', required=True)
-    parser.add_argument('--p', type=float, default=0.5, help='dropout rate')
+    # may this is useless
+    parser.add_argument('--p_rnn', nargs=2, type=float, required=True, help='dropout rate for RNN')
+    parser.add_argument('--p_in', type=float, default=0.5, help='lstm input dropout rate')
+    parser.add_argument('--p_out', type=float, default=0.5,help='dense output dropout rate')
+
     parser.add_argument('--bigram', action='store_true', help='bi-gram parameter for CRF')
     parser.add_argument('--schedule', type=int, help='schedule for learning rate decay')
     parser.add_argument('--unk_replace', type=float, default=0., help='The rate to replace a singleton word with UNK')
@@ -70,7 +74,9 @@ def main():
     decay_rate = args.decay_rate
     gamma = args.gamma
     schedule = args.schedule
-    p = args.p
+    p_rnn = tuple(args.p_rnn)
+    p_in = args.p_in
+    p_out = args.p_out
     unk_replace = args.unk_replace
     bigram = args.bigram
 
@@ -138,12 +144,12 @@ def main():
             network = BiRecurrentConvLVeG(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
                                           window, mode, hidden_size, num_layers, num_labels,
                                           embedd_word=word_table, bigram=bigram,
-                                          p_rnn=p, t_comp=args.t_comp,
+                                          p_rnn=p_rnn, t_comp=args.t_comp, tag_space=256,
                                           e_comp=args.e_comp, gaussian_dim=args.gaussian_dim)
         else:
             network = BiRecurrentConvCRF(embedd_dim, word_alphabet.size(), char_dim, char_alphabet.size(), num_filters,
-                                         window, mode, hidden_size, num_layers, num_labels,
-                                         embedd_word=word_table, bigram=bigram, p_rnn=p)
+                                         window, mode, hidden_size, num_layers, num_labels, tag_space=256,
+                                         embedd_word=word_table, bigram=bigram, p_rnn=p_rnn, p_in=p_in)
     else:
         NotImplementedError
     network_name = type(network).__name__
@@ -157,7 +163,7 @@ def main():
     logger.info("Network: %s, num_layer=%d, hidden=%d, filter=%d, crf=%s" % (
         mode, num_layers, hidden_size, num_filters, 'bigram' if bigram else 'unigram'))
     logger.info("training: l2: %f, (#training data: %d, batch: %d, dropout: %.2f, unk replace: %.2f)" % (
-        gamma, num_data, batch_size, p, unk_replace))
+        gamma, num_data, batch_size, p_in, unk_replace))
 
     num_batches = num_data / batch_size + 1
     dev_correct = 0.0
@@ -183,7 +189,7 @@ def main():
             optim.step()
 
             num_inst = word.size(0)
-            train_err += loss.data[0] * num_inst
+            train_err += loss.item()* num_inst
             train_total += num_inst
 
             time_ave = (time.time() - start_time) / batch
