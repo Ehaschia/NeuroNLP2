@@ -340,6 +340,7 @@ class ChainLVeG(nn.Module):
                 mask_t = mask_transpose[t]
                 tgt_energy = tgt_energy + (tgt_energy_new - tgt_energy) * mask_t.squeeze(3).squeeze(2)
             prev_label = target_transpose[t]
+        # alert what's this?
         partition = partition.mean(dim=2)
         loss = (logsumexp(logsumexp(partition, dim=2), dim=1) - logsumexp(tgt_energy, dim=1)).mean()
         return loss #, (energy, to_store)
