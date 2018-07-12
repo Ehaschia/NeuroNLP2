@@ -97,6 +97,10 @@ def check_numerics(input):
     if np.sum(check_res) != 0.0:
         print("Numerics Error!")
         exit(1)
+    check_big = 1.0*np.greater(np.abs(input.data.cpu().numpy()), 1e6)
+    if np.sum(check_big != 0.0):
+        print("Too big error!")
+        exit(1)
 
 
 def sequence_mask(sequence_length, max_length=None):

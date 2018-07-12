@@ -276,7 +276,7 @@ class lveg(nn.Module):
 
     def inverse(self, input):
         # implement 1 dim and 2 dim
-        epslion = 0.0
+        epslion = 1e-5
         size = input.size()
         if size[-1] != size[-2]:
             raise ValueError('To inverse matrix should be square.')
@@ -296,6 +296,7 @@ class lveg(nn.Module):
             inv_11 = (input[:, 0, 0] * scale).view(input.size()[0], 1)
 
             inv = torch.cat((inv_00, inv_01, inv_10, inv_11), dim=1)
+            check_numerics(inv)
             return inv.view(size)
         else:
             raise NotImplementedError
@@ -315,7 +316,7 @@ class lveg(nn.Module):
         input = input.view(-1, size[-2], size[-1])
         if size[-1] == 2:
             # http://www.mathcentre.ac.uk/resources/uploaded/sigma-matrices7-2009-1.pdf
-            det = input[:, 0, 0] * input[:, 1, 1] - input[:, 0, 1] * input[:, 1, 0]
+            det = input[:, 0, 0] * input[:, 1, 1] - input[:, 0, 1] * input[:, 1, 0] + epslion
             return det.view(size[:-2])
         else:
             raise NotImplementedError
@@ -376,7 +377,8 @@ class lveg(nn.Module):
             t_var = self.trans_mat_var.view(1, self.num_labels, self.num_labels, (2*self.gaussian_dim+1)*self.gaussian_dim)
 
             t_var_size = t_var.size()
-            zero_var = torch.zeros((t_var_size[:-1] + (1, )))
+
+            zero_var = torch.zeros((t_var_size[:-1] + (1, ))) if not t_var.is_cuda else torch.zeros((t_var_size[:-1] + (1, ))).cuda()
             t_vars = torch.split(t_var, [2, 1], dim=-1)
             t_var = torch.cat((t_vars[0], zero_var, t_vars[1]), dim=-1)
             t_var = t_var.view(1, self.num_labels, self.num_labels, 2*self.gaussian_dim, 2*self.gaussian_dim)
@@ -703,7 +705,6 @@ class lveg(nn.Module):
         return loss.mean()
 
     def decode(self, sents, target, mask, lengths, leading_symbolic=0):
-        is_cuda = False
         energy = self.forward(sents, mask).data
         energy_transpose = energy.transpose(0, 1)
         mask = mask.data
@@ -714,9 +715,9 @@ class lveg(nn.Module):
 
         reverse_energy_transpose = reverse_padded_sequence(energy_transpose, mask, batch_first=False)
 
-        forward = torch.zeros([length - 1, batch_size, num_label, num_label])# .cuda()
-        backward = torch.zeros([length - 1, batch_size, num_label, num_label])# .cuda()
-        holder = torch.zeros([1, batch_size, num_label, num_label])# .cuda()
+        forward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
+        backward = torch.zeros([length - 1, batch_size, num_label, num_label]).cuda()
+        holder = torch.zeros([1, batch_size, num_label, num_label]).cuda()
         mask_transpose = mask_transpose.view(length, batch_size, 1, 1)
         for i in range(0, length - 1):
             if i == 0:
@@ -746,7 +747,7 @@ class lveg(nn.Module):
 
         length, batch_size, num_label, _ = cnt_transpose.size()
 
-        if is_cuda:
+        if energy.is_cuda:
             batch_index = torch.arange(0, batch_size).long().cuda()
             pi = torch.zeros([length, batch_size, num_label]).cuda()
             pointer = torch.cuda.LongTensor(length, batch_size, num_label).zero_()
@@ -782,14 +783,14 @@ class lveg(nn.Module):
 
 
 def natural_data():
-    batch_size = 4
+    batch_size = 16
     num_epochs = 100
     gaussian_dim = 1
     learning_rate = 1e-1
     momentum = 0.9
     gamma = 0.0
     schedule = 5
-    decay_rate = 0.01
+    decay_rate = 0.05
     device = torch.device("cuda")
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
@@ -803,7 +804,7 @@ def natural_data():
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
     type_alphabet = conllx_data.create_alphabets("/home/ehaschia/Code/NeuroNLP2/data/alphabets/pos_crf/toy2/",
-                                                 train_path, data_paths=[dev_path, test_path], normalize_digits=True,
+                                                 train_path, data_paths=[dev_path, test_path], normalize_digits=False,
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
@@ -812,10 +813,10 @@ def natural_data():
 
     logger.info("Reading Data")
     # use_gpu = torch.cuda.is_available()
-    use_gpu = False
+    use_gpu = True
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet, normalize_digits=False,
+                                                   type_alphabet,normalize_digits=False,
                                                    use_gpu=use_gpu)
     # pw_cnt_map, pp_cnt_map = store_cnt(data_train, word_alphabet, pos_alphabet)
 
@@ -824,7 +825,7 @@ def natural_data():
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
                                                  use_gpu=use_gpu, volatile=True, normalize_digits=False)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, normalize_digits=False)
+                                                  use_gpu=use_gpu, volatile=True, normalize_digits=False,)
 
     network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim)
 
