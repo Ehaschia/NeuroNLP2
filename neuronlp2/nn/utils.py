@@ -86,7 +86,7 @@ def recover_rnn_seq(seq, rev_order, hx=None, batch_first=False):
     return output, hx
 
 
-def check_numerics(input):
+def check_numerics(input, position=None):
     if input is None:
         return
     if input.is_cuda:
@@ -96,11 +96,15 @@ def check_numerics(input):
     check_res = np.subtract(check_res, 1.0)
     if np.sum(check_res) != 0.0:
         print("Numerics Error!")
+        idx = np.where(check_res != 0.0)
+        if position is not None:
+            print(position)
+        print("Idx:\t " + str(idx))
         exit(1)
-    check_big = 1.0*np.greater(np.abs(input.data.cpu().numpy()), 1e6)
-    if np.sum(check_big != 0.0):
-        print("Too big error!")
-        exit(1)
+    # check_big = 1.0*np.greater(np.abs(input.data.cpu().numpy()), 1e6)
+    # if np.sum(check_big) != 0.0:
+    #     print("Too big error!")
+    #     exit(1)
 
 
 def sequence_mask(sequence_length, max_length=None):

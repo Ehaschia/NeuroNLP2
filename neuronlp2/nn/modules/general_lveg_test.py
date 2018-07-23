@@ -8,13 +8,12 @@ import torch.nn as nn
 import math
 from neuronlp2.nlinalg import logsumexp
 import numpy as np
-from neuronlp2.nn.utils import sequence_mask, reverse_padded_sequence
+from neuronlp2.nn.utils import reverse_padded_sequence
 from torch.nn.parameter import Parameter
 from torch.nn import Embedding
 from neuronlp2.io import get_logger, conllx_data
 import time
 import sys
-import torch.nn.functional as F
 from neuronlp2.nn.utils import check_numerics
 import os
 
@@ -218,15 +217,12 @@ class lveg(nn.Module):
         self.min_clip = -clip
         self.max_clip = clip
         self.k = k
+        self.softplus = nn.Softplus()
         # Gaussian for every emission rule
         # weight is log form
         # self.state_nn_weight = nn.Linear(self.input_size, self.num_labels * self.e_comp)
         self.s_weight_em = Embedding(word_size, self.num_labels)
         # every label  is a gaussian_dim dimension gaussian
-        # self.state_nn_mu = nn.Linear(self.input_size,
-        #                              self.num_labels * self.gaussian_dim * self.gaussian_dim * self.e_comp)
-        # self.state_nn_var = nn.Linear(self.input_size,
-        #                               self.num_labels * self.gaussian_dim * self.gaussian_dim * self.e_comp)
         self.s_mu_em = Embedding(word_size, self.num_labels * gaussian_dim)
         self.s_var_em = Embedding(word_size, self.num_labels * gaussian_dim * gaussian_dim)
         # weight and var is log form
@@ -276,7 +272,7 @@ class lveg(nn.Module):
 
     def inverse(self, input):
         # implement 1 dim and 2 dim
-        epslion = 1e-5
+        epslion = 1e-8
         size = input.size()
         if size[-1] != size[-2]:
             raise ValueError('To inverse matrix should be square.')
@@ -296,13 +292,44 @@ class lveg(nn.Module):
             inv_11 = (input[:, 0, 0] * scale).view(input.size()[0], 1)
 
             inv = torch.cat((inv_00, inv_01, inv_10, inv_11), dim=1)
-            check_numerics(inv)
+            check_numerics(inv, position="Inverse")
             return inv.view(size)
         else:
             raise NotImplementedError
 
-    def log_inverse(self, input):
-        return torch.log(self.inverse(torch.exp(input)))
+    def cholesky_determinitor(self, mat, log_format=False, inverse=False):
+        # input is cholesky mat L , output the determitor of L*L^T
+        # input is [x. k, k] output is [x]
+        # log_format means the output is log format or not, input always is normal format
+        epslion = 1e-8
+        mat_size = mat.size()
+        mat = mat.view(-1, mat_size[-2], mat_size[-1])
+        if log_format:
+            det = 2.0 * (torch.log(torch.abs(mat[:, 0, 0])) + torch.log(torch.abs(mat[:, 1, 1])))
+            if inverse:
+                det = -1.0*det
+        else:
+            det = (mat[:, 0, 0] * mat[:, 1, 1])**2 + epslion
+            if inverse:
+                det = 1.0 / det
+        return det
+
+    def cholesky_inverse(self, mat):
+        # input is a cholesky inverse
+        mat_size = mat.size()
+        mat = mat.view(-1, mat_size[-2], mat_size[-1])
+        # alert bp?
+        inv = torch.zeros_like(mat)
+        mat2 = mat ** 2
+        inv[:, 0, 0] = mat2[:, 1, 1] + mat2[:, 1, 0]
+        inv[:, 1, 0] = -1.0 * mat[:, 0, 0] * mat[:, 1, 0]
+        # difference with:
+        # inv[:, 0, 1] = -1.0 * mat[:, 0, 0] * mat[:, 1, 0]
+        inv[:, 0, 1] = inv[:, 1, 0]
+        inv[:, 1, 1] = mat2[:, 0, 0]
+        inv = inv.view(mat_size)
+        scale = self.cholesky_determinitor(mat, log_format=False, inverse=True)
+        return inv * scale.unsqueeze(-1).unsqueeze(-1)
 
     def determinate(self, input):
         epslion = 1e-5
@@ -321,6 +348,11 @@ class lveg(nn.Module):
         else:
             raise NotImplementedError
 
+    def cho_multi(self, mat):
+        mat_size = mat.size()
+        mat = mat.view(-1, mat_size[-2], mat_size[-1])
+        return torch.bmm(mat, mat.transpose(1, 2)).view(mat_size)
+
     def pruning(self, score, mu, var, dim, merge_dims=None):
         if merge_dims is not None:
             score_dim = list(score.size())
@@ -334,8 +366,26 @@ class lveg(nn.Module):
         # this only support 1 dim situaltion
         pruned_var = torch.gather(var, dim, pruned_score[1])
         pruned_mu = torch.gather(mu, dim, pruned_score[1])
-        # pruned_var = torch.gather(var, dim, pruned_score[1])
         return pruned_score[0].transpose(1, 2), pruned_mu.transpose(1, 2), pruned_var.transpose(1, 2)
+
+    def logsumexp_prune(self, score, mu, var, dim, merge_dims=None):
+        if merge_dims is not None:
+            score_dim = list(score.size())
+            del score_dim[merge_dims[1]]
+            score_dim[merge_dims[0]] = -1
+            score_dim = tuple(score_dim)
+            score = score.view(score_dim)
+            mu = mu.view(score_dim)
+            var = var.view(score_dim)
+        pruned_score = logsumexp(score, dim=dim)
+        pruned_mu = torch.mean(mu, dim=dim)
+        pruned_var = torch.mean(var, dim=dim)
+        return pruned_score, pruned_mu, pruned_var
+
+    def softplus_layer(self, tensor):
+        sng = torch.sign(tensor)
+        abs = self.softplus(torch.abs(tensor))
+        return sng * abs
 
     def forward(self, input, mask=None):
 
@@ -356,17 +406,16 @@ class lveg(nn.Module):
 
         s_mu = self.s_mu_em(input).view(batch, length, 1, self.num_labels, self.gaussian_dim).transpose(0, 1)
         s_weight = self.s_weight_em(input).view(batch, length, 1, self.num_labels, 1).transpose(0, 1)
-        s_var = self.s_var_em(input).view(batch, length, 1, self.num_labels, self.gaussian_dim,
+        s_cho = self.s_var_em(input).view(batch, length, 1, self.num_labels, self.gaussian_dim,
                                           self.gaussian_dim).transpose(0, 1)
         # reset s_var
-        s_var_size = s_var.size()
-        s_var = s_var.contiguous()
-        s_var = torch.bmm(s_var.view(-1, s_var_size[-2], s_var_size[-1]),
-                          s_var.view(-1, s_var_size[-2], s_var_size[-1]).transpose(1, 2)).view(s_var_size)
+        s_cho = s_cho.contiguous()
+        s_cho = self.softplus_layer(s_cho)
+
+        s_var = self.cho_multi(s_cho)
         if self.bigram:
             # alert not debug
-            t_weight = self.trans_nn_weight(input).view(batch, length, self.num_labels, self.num_labels, 1).transpose(0,
-                                                                                                                      1)
+            t_weight = self.trans_nn_weight(input).view(batch, length, self.num_labels, self.num_labels, 1).transpose(0, 1)
             t_mu = self.trans_nn_p_mu(input).view(batch, length, self.num_labels, self.num_labels,
                                                   2 * self.gaussian_dim).transpose(0, 1)
             t_var = self.trans_nn_p_var(input).view(batch, length, self.num_labels, self.num_labels,
@@ -374,137 +423,24 @@ class lveg(nn.Module):
         else:
             t_weight = self.trans_mat_weight.view(1, self.num_labels, self.num_labels, 1)
             t_mu = self.trans_mat_mu.view(1, self.num_labels, self.num_labels, 2 * self.gaussian_dim)
-            t_var = self.trans_mat_var.view(1, self.num_labels, self.num_labels, (2*self.gaussian_dim+1)*self.gaussian_dim)
 
-            t_var_size = t_var.size()
+            t_cho = self.trans_mat_var.view(1, self.num_labels, self.num_labels, (2*self.gaussian_dim+1)*self.gaussian_dim)
+            t_cho = self.softplus_layer(t_cho)
+            t_var_size = t_cho.size()
 
-            zero_var = torch.zeros((t_var_size[:-1] + (1, ))) if not t_var.is_cuda else torch.zeros((t_var_size[:-1] + (1, ))).cuda()
-            t_vars = torch.split(t_var, [2, 1], dim=-1)
-            t_var = torch.cat((t_vars[0], zero_var, t_vars[1]), dim=-1)
-            t_var = t_var.view(1, self.num_labels, self.num_labels, 2*self.gaussian_dim, 2*self.gaussian_dim)
-            t_var_size = t_var.size()
-            t_var = torch.bmm(t_var.view(-1, t_var_size[-1], t_var_size[-2]),
-                              t_var.view(-1, t_var_size[-1], t_var_size[-2]).transpose(1, 2)).view(t_var_size)
+            zero_var = torch.zeros((t_var_size[:-1] + (1, ))) if not t_cho.is_cuda else torch.zeros((t_var_size[:-1] + (1, ))).cuda()
+            t_chos = torch.split(t_cho, [2, 1], dim=-1)
+            t_cho = torch.cat((t_chos[0], zero_var, t_chos[1]), dim=-1)
+            t_cho = t_cho.view(1, self.num_labels, self.num_labels, 2*self.gaussian_dim, 2*self.gaussian_dim)
 
-        # multiply
-        # n1 is the big.
-        #
-        # def general_gaussian_multi(n1_mu, n1_var, n2_mu, n2_var, child):
-        #     dim = self.gaussian_dim
-        #
-        #     def zeta(l, eta, v=None):
-        #         # shape reformat
-        #         l_size = l.size()
-        #
-        #         if v is None:
-        #             v = self.inverse(l)
-        #
-        #         dim = l_size[-1]
-        #         l = l.view(-1, dim, dim)
-        #         eta = eta.view(-1, dim)
-        #         v = v.view(-1, dim, dim)
-        #
-        #         # can optimize
-        #         # Alert the scale is log format
-        #         scale = -0.5 * (dim * math.log(2 * math.pi) - torch.log(self.determinate(l)) + torch.bmm(
-        #             torch.bmm(eta.unsqueeze(1), v), eta.unsqueeze(2)).squeeze())
-        #         return scale.view(l_size[:-2])
-        #
-        #     # n1_var = n1_var.view(n1_var.size()[:-2] + (-1,))
-        #
-        #     n1_mu = n1_mu.contiguous()
-        #     n2_mu = n2_mu.contiguous()
-        #     n1_var = n1_var.contiguous()
-        #     n2_var = n2_var.contiguous()
-        #     # alert matrix multiply
-        #     # here V = (Lambda_22 - Lambda_12^T (Lambda_11 + lambda)^-1 Lambda_12)^-1
-        #     # lambda is inverse of V
-        #     l1 = self.inverse(n1_var)
-        #     l1_00, l1_01, l1_10, l1_11 = torch.split(l1.view(l1.size()[:-2] + (-1,)), [dim, dim, dim, dim], dim=-1)
-        #     # deal with format
-        #     # l1_size [batch, length, pos_num, pos_num, dim, dim]
-        #     l1_00 = l1_00.unsqueeze(-1)
-        #     l1_01 = l1_01.unsqueeze(-1)
-        #     l1_10 = l1_10.unsqueeze(-1)
-        #     l1_11 = l1_11.unsqueeze(-1)
-        #     l2 = self.inverse(n2_var).contiguous()
-        #
-        #     # alert format : only support 3d
-        #     l1_size = l1.size()
-        #     # compressed l1 and n1_mu and eta1
-        #     l1 = l1.view(-1, l1_size[-2], l1_size[-1])
-        #     n1_mu = n1_mu.view(-1, l1_size[-1], 1)
-        #     eta1 = torch.bmm(l1, n1_mu).view(l1_size[:-2] + (2 * dim,))
-        #
-        #     eta1_0, eta1_1 = torch.split(eta1.view(l1_size[:-1]), [dim, dim], dim=-1)
-        #
-        #     # compressed l2, n2_mu and eta2
-        #     l2_size = l2.size()
-        #     n2_mu_size = n2_mu.size()
-        #     l2 = l2.view(-1, l2_size[-2], l2_size[-1])
-        #     n2_mu = n2_mu.view(-1, l2_size[-2], 1)
-        #     eta2 = torch.bmm(l2, n2_mu).view(n2_mu_size)
-        #
-        #     zeta1 = zeta(l1.contiguous(), eta1.contiguous(), v=n1_var).view(l1_size[:-2])
-        #     zeta2 = zeta(l2, eta2, v=n2_var).view(l2_size[:-2])
-        #
-        #     # extend l1 split part
-        #     # l1_part_size = l1_00.size()
-        #     # l1_00 = (l1_00 + torch.zeros(l2_size, requires_grad=False).cuda()).view(-1, dim, dim)
-        #     # l1_10 = (l1_10 + torch.zeros(l2_size, requires_grad=False).cuda()).view(-1, dim, dim)
-        #     # l1_01 = (l1_01 + torch.zeros(l2_size, requires_grad=False).cuda()).view(-1, dim, dim)
-        #     # l1_11 = (l1_11 + torch.zeros(l2_size, requires_grad=False).cuda()).view(-1, dim, dim)
-        #     # l2 = (l2.view(l2_size) + torch.zeros(l1_part_size, requires_grad=False).cuda())
-        #
-        #     l1_part_size = l1_00.size()
-        #     l1_00 = (l1_00 + torch.zeros(l2_size, requires_grad=False)).view(-1, dim, dim)
-        #     l1_10 = (l1_10 + torch.zeros(l2_size, requires_grad=False)).view(-1, dim, dim)
-        #     l1_01 = (l1_01 + torch.zeros(l2_size, requires_grad=False)).view(-1, dim, dim)
-        #     l1_11 = (l1_11 + torch.zeros(l2_size, requires_grad=False)).view(-1, dim, dim)
-        #     l2 = (l2.view(l2_size) + torch.zeros(l1_part_size, requires_grad=False))
-        #
-        #     var_size = l2.size()
-        #     mu_size = var_size[:-1]
-        #     scale_size = mu_size[:-1]
-        #     l2 = l2.view(-1, dim, dim)
-        #
-        #     if child:
-        #         la_part = torch.bmm(l1_10, self.inverse(l1_11 + l2))
-        #         la_new = l1_00 - torch.bmm(la_part, l1_10)
-        #         var_new = self.inverse(la_new)
-        #
-        #         eta1_0 = eta1_0 + torch.zeros_like(eta2)
-        #
-        #         eta1_0 = eta1_0.view(-1, dim, 1)
-        #         eta_new = eta1_0 - torch.bmm(la_part, (eta1_1 + eta2).view(-1, dim, 1))
-        #         mu_new = torch.bmm(var_new, eta_new)
-        #         zeta_merge = zeta(l1_11 + l2, eta1_1 + eta2)
-        #         zeta_new = zeta(la_new, eta_new, var_new)
-        #
-        #     else:
-        #         la_part = torch.bmm(l1_10, self.inverse(l1_00 + l2))
-        #         la_new = l1_00 - torch.bmm(la_part, l1_01)
-        #         var_new = self.inverse(la_new)
-        #
-        #         eta1_1 = eta1_1 + torch.zeros_like(eta2)
-        #
-        #         eta1_1 = eta1_1.view(-1, dim, 1)
-        #         eta_new = eta1_1 - torch.bmm(la_part, (eta1_0 + eta2).view(-1, dim, 1))
-        #         mu_new = torch.bmm(var_new, eta_new)
-        #         zeta_merge = zeta(l1_00 + l2, eta1_0 + eta2)
-        #         zeta_new = zeta(la_new, eta_new, var_new)
-        #     # alert shape
-        #     check_numerics(zeta1)
-        #     check_numerics(zeta2)
-        #     check_numerics(zeta_merge)
-        #     check_numerics(zeta_new)
-        #     scale = zeta1 + zeta2 - zeta_merge.view(scale_size) - zeta_new.view(scale_size)
-        #     return scale, mu_new.view(mu_size), var_new.view(var_size)
+            t_var = self.cho_multi(t_cho)
+            t_var_inv = self.inverse(t_var)
 
-        def general_gaussian_multi(n1_mu, n1_var, n2_mu, n2_var, child):
+        def general_gaussian_multi(n1_mu, n1_var, n2_mu, n2_var, child, n1_var_inv=None, n2_var_inv=None,
+                                   n1_cho=None, n2_cho=None):
             dim = 1
 
-            def zeta(l, eta, v=None):
+            def zeta(l, eta, v=None, cho=None):
                 # shape reformat
                 l_size = l.size()
 
@@ -520,9 +456,13 @@ class lveg(nn.Module):
                 # can optimize
                 # Alert the scale is log format
                 # log(2*pi) = 1.8378
-                scale = -0.5 * (dim * 1.837877 - torch.log(self.determinate(l)) + torch.bmm(
+                if cho is None:
+                    det = torch.log(self.determinate(l))
+                else:
+                    det = self.cholesky_determinitor(n1_cho, log_format=True, inverse=True)
+                scale = -0.5 * (dim * 1.837877 - det + torch.bmm(
                     torch.bmm(eta.unsqueeze(1), v), eta.unsqueeze(2)).squeeze())
-                check_numerics(scale)
+                check_numerics(scale, position="Scale")
                 return scale.view(l_size[:-2])
 
             # n1_var = n1_var.view(n1_var.size()[:-2] + (-1,))
@@ -533,21 +473,28 @@ class lveg(nn.Module):
             n2_var = n2_var.contiguous()
 
             # calculate lambda, eta and zeta
-            lambda1 = self.inverse(n1_var)
-            lambda2 = self.inverse(n2_var)
+            if n1_var_inv is None:
+                l1 = self.inverse(n1_var)
+            else:
+                l1 = n1_var_inv
 
-            l1_size = lambda1.size()
-            l1 = lambda1.view(-1, l1_size[-2], l1_size[-1])
+            if n2_var_inv is None:
+                l2 = self.inverse(n2_var)
+            else:
+                l2 = n2_var_inv
+
+            l1_size = l1.size()
+            l1 = l1.view(-1, l1_size[-2], l1_size[-1])
             eta1 = torch.bmm(l1, n1_mu.view(-1, l1_size[-1], 1)).view(l1_size[:-2] + (2 * dim,))
             l1 = l1.view(l1_size)
 
-            l2_size = lambda2.size()
-            l2 = lambda2.view(-1, l2_size[-2], l2_size[-1])
+            l2_size = l2.size()
+            l2 = l2.view(-1, l2_size[-2], l2_size[-1])
             eta2 = torch.bmm(l2, n2_mu.view(-1, l2_size[-1], 1)).view(l2_size[:-2] + (dim,))
             l2 = l2.view(l2_size)
 
-            zeta1 = zeta(l1, eta1, n1_var)
-            zeta2 = zeta(l2, eta2, n2_var)
+            zeta1 = zeta(l1, eta1, n1_var, cho=n1_cho)
+            zeta2 = zeta(l2, eta2, n2_var, cho=n2_cho)
 
             if not child:
                 zero_l2 = torch.zeros_like(l2)
@@ -617,29 +564,34 @@ class lveg(nn.Module):
                 scale = scale_c.unsqueeze(3) + scale_p + t_weight[i] + s_weight
             else:
                 if i == 0:
-                    scale_c, mu_c, var_c = general_gaussian_multi(t_mu, t_var, s_mu[i], s_var[i], True)
-                    check_numerics(scale_c)
-                    check_numerics(mu_c)
-                    check_numerics(var_c)
+                    scale_c, mu_c, var_c = general_gaussian_multi(t_mu, t_var, s_mu[i], s_var[i], True,
+                                                                  n1_var_inv=t_var_inv, n1_cho=t_cho)
+                    # check_numerics(scale_c)
+                    # check_numerics(mu_c)
+                    # check_numerics(var_c)
                     scale_p, mu_p, var_p = general_gaussian_multi(t_mu.unsqueeze(1), t_var.unsqueeze(1),
-                                                                  mu_c.unsqueeze(3), var_c.unsqueeze(3), False)
+                                                                  mu_c.unsqueeze(3), var_c.unsqueeze(3), False,
+                                                                  n1_var_inv=t_var_inv)
                 else:
                     _, mu_p, var_p = self.pruning(scale_p, mu_p, var_p, 1, merge_dims=(1, 2))
+                    # _, mu_p, var_p = self.logsumexp_prune(scale_p, mu_p, var_p, 1, merge_dims=(1, 2))
                     mu_p = mu_p.unsqueeze(2)
                     var_p = var_p.unsqueeze(2)
                     scale_c, mu_c, var_c = gaussian_multi(mu_p, var_p, s_mu[i], s_var[i].squeeze(-1))
                     scale_p, mu_p, var_p = general_gaussian_multi(t_mu.unsqueeze(1), t_var.unsqueeze(1),
-                                                                  mu_c.unsqueeze(3), var_c.unsqueeze(3).unsqueeze(-1), False)
-                    if i != length -1:
-                        scale_p = scale_p * (mask[:, i+1]).view(batch, 1, 1, 1)
-                    else:
-                        scale_p = scale_p * (mask[:, i]).view(batch, 1, 1, 1)
+                                                                  mu_c.unsqueeze(3), var_c.unsqueeze(3).unsqueeze(-1), False,
+                                                                  n1_var_inv=t_var_inv)
+                if i != length -1:
+                    scale_p = scale_p * (mask[:, i+1]).view(batch, 1, 1, 1)
+                else:
+                    scale_p = scale_p * (mask[:, i]).view(batch, 1, 1, 1)
                 scale = scale_c.unsqueeze(3) + scale_p + t_weight + s_weight[i]
             output.append(scale.view((1,) + scale.size()))
         output = torch.cat(tuple(output), dim=0)
 
         if mask is not None:
             output = output * mask.transpose(0, 1).view(length, batch, 1, 1, 1)
+
         return output.transpose(0, 1)
 
     def loss(self, sents, target, mask):
@@ -794,17 +746,17 @@ def natural_data():
     device = torch.device("cuda")
 
     # train_path = "/home/zhaoyp/Data/pos/en-ud-train.conllu_clean_cnn"
-    train_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/toy2"
-    dev_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/toy2"
-    test_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/toy2"
+    train_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/en-ud-train.conllu_clean_cnn"
+    dev_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/en-ud-dev.conllu_clean_cnn"
+    test_path = "/home/ehaschia/Code/NeuroNLP2/data/pos/en-ud-test.conllu_clean_cnn"
 
     logger = get_logger("POSCRFTagger")
     # load data
 
     logger.info("Creating Alphabets")
     word_alphabet, char_alphabet, pos_alphabet, \
-    type_alphabet = conllx_data.create_alphabets("/home/ehaschia/Code/NeuroNLP2/data/alphabets/pos_crf/toy2/",
-                                                 train_path, data_paths=[dev_path, test_path], normalize_digits=False,
+    type_alphabet = conllx_data.create_alphabets("/home/ehaschia/Code/NeuroNLP2/data/alphabets/pos_crf/uden/",
+                                                 train_path, data_paths=[dev_path, test_path],
                                                  max_vocabulary_size=50000, embedd_dict=None)
 
     logger.info("Word Alphabet Size: %d" % word_alphabet.size())
@@ -816,16 +768,16 @@ def natural_data():
     use_gpu = True
 
     data_train = conllx_data.read_data_to_variable(train_path, word_alphabet, char_alphabet, pos_alphabet,
-                                                   type_alphabet,normalize_digits=False,
+                                                   type_alphabet,
                                                    use_gpu=use_gpu)
     # pw_cnt_map, pp_cnt_map = store_cnt(data_train, word_alphabet, pos_alphabet)
 
     num_data = sum(data_train[1])
 
     data_dev = conllx_data.read_data_to_variable(dev_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                 use_gpu=use_gpu, volatile=True, normalize_digits=False)
+                                                 use_gpu=use_gpu, volatile=True)
     data_test = conllx_data.read_data_to_variable(test_path, word_alphabet, char_alphabet, pos_alphabet, type_alphabet,
-                                                  use_gpu=use_gpu, volatile=True, normalize_digits=False,)
+                                                  use_gpu=use_gpu, volatile=True)
 
     network = lveg(word_alphabet.size(), pos_alphabet.size(), gaussian_dim=gaussian_dim)
 
@@ -867,6 +819,7 @@ def natural_data():
             loss.backward()
             # store_input(word, labels, masks, batch, epoch)
             # store_data(network, loss, batch, epoch)
+            nn.utils.clip_grad_value_(network.parameters(), 1.0)
             optim.step()
 
             num_inst = word.size(0)
