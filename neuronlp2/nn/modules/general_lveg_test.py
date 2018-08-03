@@ -251,6 +251,9 @@ class lveg(nn.Module):
             # (2*gaussian_dim * 2*gaussian_dim) matrix cholesky decomposition
             self.trans_mat_var = Parameter(
                 torch.Tensor(self.num_labels, self.num_labels, (2*self.gaussian_dim+1)*self.gaussian_dim))
+
+            # self.trans_mat_var = Parameter(
+            #     torch.Tensor(self.num_labels, self.num_labels, 2*self.gaussian_dim))
         self.reset_parameter()
 
     def reset_parameter(self):
@@ -366,7 +369,11 @@ class lveg(nn.Module):
         # this only support 1 dim situaltion
         pruned_var = torch.gather(var, dim, pruned_score[1])
         pruned_mu = torch.gather(mu, dim, pruned_score[1])
-        return pruned_score[0].transpose(1, 2), pruned_mu.transpose(1, 2), pruned_var.transpose(1, 2)
+        # pruned_mu = torch.mean(mu, dim=dim)
+        # pruned_var = torch.mean(var, dim=dim)
+        return pruned_score[0], \
+               pruned_mu, \
+               pruned_var
 
     def logsumexp_prune(self, score, mu, var, dim, merge_dims=None):
         if merge_dims is not None:
@@ -495,7 +502,6 @@ class lveg(nn.Module):
 
             zeta1 = zeta(l1, eta1, n1_var, cho=n1_cho)
             zeta2 = zeta(l2, eta2, n2_var, cho=n2_cho)
-
             if not child:
                 zero_l2 = torch.zeros_like(l2)
                 l2_expand = torch.cat((l2, zero_l2, zero_l2, zero_l2), dim=-2).squeeze(-1)
@@ -575,8 +581,8 @@ class lveg(nn.Module):
                 else:
                     _, mu_p, var_p = self.pruning(scale_p, mu_p, var_p, 1, merge_dims=(1, 2))
                     # _, mu_p, var_p = self.logsumexp_prune(scale_p, mu_p, var_p, 1, merge_dims=(1, 2))
-                    mu_p = mu_p.unsqueeze(2)
-                    var_p = var_p.unsqueeze(2)
+                    mu_p = mu_p.unsqueeze(3)# .unsqueeze(1)
+                    var_p = var_p.unsqueeze(3)# .unsqueeze(1)
                     scale_c, mu_c, var_c = gaussian_multi(mu_p, var_p, s_mu[i], s_var[i].squeeze(-1))
                     scale_p, mu_p, var_p = general_gaussian_multi(t_mu.unsqueeze(1), t_var.unsqueeze(1),
                                                                   mu_c.unsqueeze(3), var_c.unsqueeze(3).unsqueeze(-1), False,
@@ -813,9 +819,8 @@ def natural_data():
             # word = word[:, :max_len]
             # labels = labels[:, :max_len]
             # masks = masks[:, :max_len]
-
             optim.zero_grad()
-            loss = network.loss(word, labels, mask=masks).mean()
+            loss = network.loss(word, labels, mask=masks)
             loss.backward()
             # store_input(word, labels, masks, batch, epoch)
             # store_data(network, loss, batch, epoch)
